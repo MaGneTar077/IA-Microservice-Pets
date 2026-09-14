@@ -1,0 +1,115 @@
+server:
+  port: ${PORT:8083}
+  error:
+    include-message: always
+    include-stacktrace: never
+
+spring:
+  application:
+    name: ia-service
+
+  # ---------- Base de datos: Supabase Transaction Pooler ----------
+  datasource:
+    url: ${DB_URL}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:5}
+      minimum-idle: 1
+      connection-timeout: 30000
+      idle-timeout: 300000
+      max-lifetime: 600000
+      data-source-properties:
+        # Obligatorio con el Transaction Pooler: no soporta prepared statements con nombre
+        prepareThreshold: 0
+
+  jpa:
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+          lob:
+            non_contextual_creation: true
+    show-sql: false
+
+  # ---------- Adjuntos: imágenes, audio y PDFs del chat ----------
+  servlet:
+    multipart:
+      enabled: true
+      max-file-size: ${MAX_FILE_SIZE:20MB}
+      max-request-size: ${MAX_REQUEST_SIZE:25MB}
+
+  # ---------- Redis (Upstash) para rate limiting ----------
+  data:
+    redis:
+      host: ${REDIS_HOST}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD}
+      ssl:
+        enabled: true
+      timeout: 5s
+
+  # ---------- Google Cloud Pub/Sub ----------
+  cloud:
+    gcp:
+      project-id: ${GCP_PROJECT_ID}
+      pubsub:
+        enabled: true
+
+  jackson:
+    default-property-inclusion: non_null
+    serialization:
+      write-dates-as-timestamps: false
+
+# ---------- Configuración propia del servicio ----------
+gemini:
+  api-key: ${GEMINI_API_KEY}
+  model: ${GEMINI_MODEL}
+  base-url: ${GEMINI_BASE_URL:https://generativelanguage.googleapis.com/v1beta}
+  timeout-seconds: ${GEMINI_TIMEOUT:60}
+  max-tool-iterations: ${GEMINI_MAX_TOOL_ITERATIONS:5}
+  max-history-messages: ${GEMINI_MAX_HISTORY:20}
+
+security:
+  jwt:
+    secret: ${JWT_SECRET}
+
+services:
+  gateway-url: ${GATEWAY_URL}
+
+ratelimit:
+  chat:
+    requests-per-minute: ${RATELIMIT_CHAT_RPM:10}
+  documents:
+    requests-per-hour: ${RATELIMIT_DOCS_RPH:20}
+
+pubsub:
+  topics:
+    ai-suggestion-generated: ai-suggestion-generated
+
+# ---------- Observabilidad ----------
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+  api-docs:
+    path: /v3/api-docs
+
+logging:
+  level:
+    root: INFO
+    com.myanimal.org: ${LOG_LEVEL:INFO}
