@@ -49,7 +49,7 @@ fase posterior.
 | **`ai-service`** | **8083** | **Spring Boot** | **Este repo** |
 | `medical-service` | 3000 | Node.js | Emite eventos de tratamiento/examen/cirugía |
 | `calendar-service` | 3001 | Node.js | Destino de `agendar_cita` (`/api/calendar-events`) |
-| `notification-service` | — | Node.js | Subscriber de `ai-suggestion-generated` |
+| `notification-service` | 3002 | Node.js | Subscriber de `ai-suggestion-generated` |
 
 ---
 
