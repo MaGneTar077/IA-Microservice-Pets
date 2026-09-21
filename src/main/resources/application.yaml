@@ -69,8 +69,11 @@ spring:
 gemini:
   api-key: ${GEMINI_API_KEY}
   model: ${GEMINI_MODEL}
+  model-fallback: ${GEMINI_MODEL_FALLBACK:gemini-3.6-flash}
   base-url: ${GEMINI_BASE_URL:https://generativelanguage.googleapis.com/v1beta}
   timeout-seconds: ${GEMINI_TIMEOUT:60}
+  max-retries: ${GEMINI_MAX_RETRIES:3}
+  retry-backoff-ms: ${GEMINI_RETRY_BACKOFF_MS:1000}
   max-tool-iterations: ${GEMINI_MAX_TOOL_ITERATIONS:5}
   max-history-messages: ${GEMINI_MAX_HISTORY:20}
 
