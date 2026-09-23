@@ -10,6 +10,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import com.myanimal.org.IA_service.domain.exception.AiContentBlockedException;
 import com.myanimal.org.IA_service.domain.exception.AiModelException;
 import com.myanimal.org.IA_service.domain.exception.AiModelUnavailableException;
+import com.myanimal.org.IA_service.domain.exception.ConversationNotFoundException;
 import com.myanimal.org.IA_service.infrastructure.adapters.in.dto.ErrorResponse;
 
 import lombok.extern.slf4j.Slf4j;
@@ -40,6 +41,12 @@ public class ApiExceptionHandler {
         return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
                 .body(new ErrorResponse("CONTENT_BLOCKED",
                         "No puedo responder a ese mensaje por motivos de seguridad."));
+    }
+
+    @ExceptionHandler(ConversationNotFoundException.class)
+    public ResponseEntity<ErrorResponse> handleConversationNotFound(ConversationNotFoundException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(new ErrorResponse("CONVERSATION_NOT_FOUND", "La conversación no existe."));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

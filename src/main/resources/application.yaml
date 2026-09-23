@@ -85,6 +85,7 @@ gemini:
 security:
   jwt:
     secret: ${JWT_SECRET}
+    user-id-claim: ${JWT_USER_ID_CLAIM:id}
 
 services:
   gateway-url: ${GATEWAY_URL}

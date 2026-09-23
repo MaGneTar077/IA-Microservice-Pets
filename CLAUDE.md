@@ -69,12 +69,26 @@ el modelo alucina un `petId` ajeno, `pet-service` responde 403 y ese 403 vuelve 
 `JWT_SECRET` debe ser idéntico al de user, pet, veterinary y gateway.
 `/internal/**` lo invoca Pub/Sub con un ID token de Google: fuera del filtro de JWT.
 
+**Detalles confirmados contra `user-service` (etapa 2):**
+- La clave HS256 se construye con `Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8))`
+  — **no** es base64. `user-service` usa jjwt 0.11.x (`parserBuilder`/`setSigningKey`); nuestro
+  `pom` tiene 0.12.6, API distinta (`Jwts.parser().verifyWith(key).build().parseSignedClaims(...)`)
+  pero misma clave/algoritmo, tokens compatibles entre versiones.
+- El UUID del usuario viaja en el claim **`id`**, no en `sub` (`sub` es el email). Configurable
+  vía `security.jwt.user-id-claim` (default `id`). Si el valor de ese claim no parsea como UUID,
+  401 inmediato y se loguea el nombre del claim y el valor recibido (nunca el token completo).
+- Tokens duran 1 hora.
+
 ## Convenciones de código
 
 - Un controller y un service por funcionalidad.
 - DTOs planos con `@Data @Builder @AllArgsConstructor @NoArgsConstructor`.
 - `@Builder(toBuilder = true)` en modelos de dominio.
 - Tests: `@MockitoBean`, `@WithMockUser`, `.with(csrf())`, `@ExtendWith(MockitoExtension.class)`.
+  Excepción: en `@WebMvcTest` de controllers bajo `/api/ai/**`, `@WithMockUser` no sirve
+  (ver "Trampas conocidas" — el `JwtAuthenticationFilter` real siempre corre ahí); hay que
+  importar `SecurityConfig`+`JwtProperties` y mandar un JWT real. CSRF ya está desactivado
+  para `/api/**`, así que `.with(csrf())` no hace falta en esos tests.
 - En tests preferir `.builder()...build()` sobre constructores posicionales.
 - Al agregar un parámetro a un constructor con `@RequiredArgsConstructor`, revisar los tests
   que instancian la clase a mano — rompen con `cannot be applied to given types`.
@@ -114,6 +128,25 @@ el modelo alucina un `petId` ajeno, `pet-service` responde 403 y ese 403 vuelve 
   una vez es probable que siga lento. Se descartó por ahora para no complicar el timeout
   único de `gemini.timeout-seconds`; revisar si `GEMINI_TIMEOUT=20` + `GEMINI_MAX_RETRIES=1`
   no es suficiente en producción.
+- **`@WebMvcTest` incluye automáticamente cualquier bean `Filter`** (aunque no se
+  `@Import`ee), porque el allowlist de tipos de esa slice trata los filtros como parte
+  de la capa web. `JwtAuthenticationFilter` (un `@Component` + `OncePerRequestFilter`)
+  se cuela en **cualquier** `@WebMvcTest` del proyecto y exige que `JwtProperties` esté
+  disponible — si no, `UnsatisfiedDependencyException` al arrancar el slice. Por eso los
+  tests de controllers bajo `/api/ai/**` importan `SecurityConfig` + `JwtProperties` y
+  mandan un JWT real firmado con el `security.jwt.secret` del perfil `test`, en vez de
+  `@WithMockUser` (que no sirve de nada: el filtro real corre igual y rechaza la
+  petición si no trae un `Authorization` válido).
+- `ConversationRepositoryPort` tiene dos implementaciones: `JpaConversationRepositoryAdapter`
+  (`@Profile("!test")`, la real) y `NoopConversationRepositoryPort` en `src/test`
+  (`@Profile("test")`, lanza `UnsupportedOperationException` si algo intenta usarla de
+  verdad). Existe solo para que `IaServiceApplicationTests` arranque el contexto completo
+  sin datasource/JPA — ningún test hace aserciones sobre ella. Los tests de `ChatService`
+  usan mocks de Mockito, no este fake.
+- **Testcontainers, mejora futura**: los repositorios JPA (`JpaConversationRepositoryAdapter`)
+  no tienen test de integración contra Postgres real en esta etapa — solo `ChatServiceTest`
+  con `ConversationRepositoryPort` mockeado. Cuando se necesite probar el mapeo de
+  entidades/jsonb de verdad, usar Testcontainers con Postgres en vez de pegarle a Supabase.
 
 ## Estado actual
 

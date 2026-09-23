@@ -15,7 +15,12 @@ spring:
       - com.google.cloud.spring.autoconfigure.pubsub.health.PubSubSubscriptionHealthIndicatorAutoConfiguration
 
 # Únicas propiedades sin default que algún bean llega a leer en este perfil
-# (GeminiProperties se instancia siempre, con o sin datasource/redis/gcp).
+# (GeminiProperties/JwtProperties se instancian siempre, con o sin datasource/redis/gcp).
 gemini:
   api-key: test-key
   model: gemini-test
+
+security:
+  jwt:
+    secret: test-secret-0123456789abcdef0123456789
+    user-id-claim: id
