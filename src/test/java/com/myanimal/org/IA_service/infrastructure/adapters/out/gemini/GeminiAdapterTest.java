@@ -8,11 +8,17 @@ import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import java.net.URI;
+
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.reactive.function.client.ClientResponse;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientRequestException;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.myanimal.org.IA_service.domain.exception.AiContentBlockedException;
 import com.myanimal.org.IA_service.domain.exception.AiModelException;
 import com.myanimal.org.IA_service.domain.exception.AiModelUnavailableException;
@@ -23,6 +29,12 @@ import com.myanimal.org.IA_service.domain.model.AiResponse;
 import com.myanimal.org.IA_service.domain.model.AiRole;
 import com.myanimal.org.IA_service.infrastructure.config.GeminiProperties;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import io.netty.handler.timeout.ReadTimeoutException;
+import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Mono;
 
 class GeminiAdapterTest {
@@ -69,16 +81,20 @@ class GeminiAdapterTest {
 
     private AtomicInteger callCount;
 
-    private GeminiAdapter buildAdapter(GeminiProperties properties, Queue<ClientResponse> responses) {
+    private GeminiAdapter buildAdapter(GeminiProperties properties, Queue<Object> responses) {
         callCount = new AtomicInteger(0);
         WebClient webClient = WebClient.builder()
                 .baseUrl("http://gemini.test")
                 .exchangeFunction(request -> {
                     callCount.incrementAndGet();
-                    return Mono.just(responses.poll());
+                    Object next = responses.poll();
+                    if (next instanceof Throwable throwable) {
+                        return Mono.error(throwable);
+                    }
+                    return Mono.just((ClientResponse) next);
                 })
                 .build();
-        return new GeminiAdapter(webClient, properties);
+        return new GeminiAdapter(webClient, properties, new ObjectMapper());
     }
 
     private GeminiProperties defaultProperties() {
@@ -104,6 +120,12 @@ class GeminiAdapterTest {
         return ClientResponse.create(status).build();
     }
 
+    private WebClientRequestException timeout() {
+        return new WebClientRequestException(
+                ReadTimeoutException.INSTANCE, HttpMethod.POST, URI.create("http://gemini.test/timeout"),
+                new HttpHeaders());
+    }
+
     private AiRequest sampleRequest() {
         return AiRequest.builder()
                 .systemInstruction("system")
@@ -116,7 +138,7 @@ class GeminiAdapterTest {
 
     @Test
     void respuesta200MapeaTextoYTokens() {
-        Queue<ClientResponse> responses = new ConcurrentLinkedQueue<>(List.of(ok(OK_BODY)));
+        Queue<Object> responses = new ConcurrentLinkedQueue<>(List.of(ok(OK_BODY)));
         GeminiAdapter adapter = buildAdapter(defaultProperties(), responses);
 
         AiResponse response = adapter.generate(sampleRequest());
@@ -133,7 +155,7 @@ class GeminiAdapterTest {
 
     @Test
     void partsConThoughtSeIgnoran() {
-        Queue<ClientResponse> responses = new ConcurrentLinkedQueue<>(List.of(ok(OK_BODY_WITH_THOUGHT)));
+        Queue<Object> responses = new ConcurrentLinkedQueue<>(List.of(ok(OK_BODY_WITH_THOUGHT)));
         GeminiAdapter adapter = buildAdapter(defaultProperties(), responses);
 
         AiResponse response = adapter.generate(sampleRequest());
@@ -144,7 +166,7 @@ class GeminiAdapterTest {
 
     @Test
     void exitoTrasReintentos() {
-        Queue<ClientResponse> responses = new ConcurrentLinkedQueue<>(List.of(
+        Queue<Object> responses = new ConcurrentLinkedQueue<>(List.of(
                 status(HttpStatus.SERVICE_UNAVAILABLE),
                 status(HttpStatus.SERVICE_UNAVAILABLE),
                 ok(OK_BODY)));
@@ -158,7 +180,7 @@ class GeminiAdapterTest {
 
     @Test
     void reintentosAgotadosUsaFallback() {
-        Queue<ClientResponse> responses = new ConcurrentLinkedQueue<>(List.of(
+        Queue<Object> responses = new ConcurrentLinkedQueue<>(List.of(
                 status(HttpStatus.SERVICE_UNAVAILABLE),
                 status(HttpStatus.SERVICE_UNAVAILABLE),
                 status(HttpStatus.SERVICE_UNAVAILABLE),
@@ -174,7 +196,7 @@ class GeminiAdapterTest {
 
     @Test
     void error403NoReintentaYLanzaExcepcionInmediata() {
-        Queue<ClientResponse> responses = new ConcurrentLinkedQueue<>(List.of(status(HttpStatus.FORBIDDEN)));
+        Queue<Object> responses = new ConcurrentLinkedQueue<>(List.of(status(HttpStatus.FORBIDDEN)));
         GeminiAdapter adapter = buildAdapter(defaultProperties(), responses);
 
         assertThatThrownBy(() -> adapter.generate(sampleRequest()))
@@ -184,7 +206,7 @@ class GeminiAdapterTest {
 
     @Test
     void finishReasonSafetyLanzaContenidoBloqueado() {
-        Queue<ClientResponse> responses = new ConcurrentLinkedQueue<>(List.of(ok(SAFETY_BODY)));
+        Queue<Object> responses = new ConcurrentLinkedQueue<>(List.of(ok(SAFETY_BODY)));
         GeminiAdapter adapter = buildAdapter(defaultProperties(), responses);
 
         assertThatThrownBy(() -> adapter.generate(sampleRequest()))
@@ -192,8 +214,81 @@ class GeminiAdapterTest {
     }
 
     @Test
+    void logueaCodigoYMensajeDeErrorSinExponerLaApiKeyNiElBody() {
+        Logger logger = (Logger) LoggerFactory.getLogger(GeminiAdapter.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+
+        String errorBody = """
+                {
+                  "error": {
+                    "code": 403,
+                    "message": "API key not valid. Please pass a valid API key.",
+                    "status": "PERMISSION_DENIED"
+                  }
+                }
+                """;
+        Queue<Object> responses = new ConcurrentLinkedQueue<>(List.of(
+                ClientResponse.create(HttpStatus.FORBIDDEN)
+                        .header("Content-Type", "application/json")
+                        .body(errorBody)
+                        .build()));
+        GeminiAdapter adapter = buildAdapter(defaultProperties(), responses);
+
+        try {
+            assertThatThrownBy(() -> adapter.generate(sampleRequest()))
+                    .isInstanceOf(AiModelException.class);
+
+            assertThat(appender.list).anyMatch(event -> event.getLevel() == Level.WARN
+                    && event.getFormattedMessage().contains("403")
+                    && event.getFormattedMessage().contains("API key not valid. Please pass a valid API key."));
+            assertThat(appender.list).noneMatch(event -> event.getFormattedMessage().contains("test-key"));
+        } finally {
+            logger.detachAppender(appender);
+        }
+    }
+
+    @Test
+    void timeoutSeguidoDeExitoEnReintento() {
+        Queue<Object> responses = new ConcurrentLinkedQueue<>(List.of(timeout(), ok(OK_BODY)));
+        GeminiAdapter adapter = buildAdapter(defaultProperties(), responses);
+
+        AiResponse response = adapter.generate(sampleRequest());
+
+        assertThat(response.getModelUsed()).isEqualTo("gemini-primary");
+        assertThat(callCount.get()).isEqualTo(2);
+    }
+
+    @Test
+    void timeoutEnTodosLosIntentosIncluidoFallbackTerminaEnNoDisponible() {
+        Logger logger = (Logger) LoggerFactory.getLogger(GeminiAdapter.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+
+        GeminiProperties properties = defaultProperties();
+        properties.setMaxRetries(1);
+        // 1 intento inicial + 1 reintento al modelo principal, luego 1 intento de fallback: 3 timeouts.
+        Queue<Object> responses = new ConcurrentLinkedQueue<>(List.of(timeout(), timeout(), timeout()));
+        GeminiAdapter adapter = buildAdapter(properties, responses);
+
+        try {
+            assertThatThrownBy(() -> adapter.generate(sampleRequest()))
+                    .isInstanceOf(AiModelUnavailableException.class);
+            assertThat(callCount.get()).isEqualTo(3);
+
+            assertThat(appender.list).allMatch(event -> !event.getFormattedMessage().contains("test-key"));
+            assertThat(appender.list).anyMatch(event -> event.getFormattedMessage().contains("Timeout de lectura"));
+            assertThat(appender.list).noneMatch(event -> event.getFormattedMessage().contains("Fallo de conexión"));
+        } finally {
+            logger.detachAppender(appender);
+        }
+    }
+
+    @Test
     void fallbackTambienFallaLanzaNoDisponible() {
-        Queue<ClientResponse> responses = new ConcurrentLinkedQueue<>(List.of(
+        Queue<Object> responses = new ConcurrentLinkedQueue<>(List.of(
                 status(HttpStatus.SERVICE_UNAVAILABLE),
                 status(HttpStatus.SERVICE_UNAVAILABLE),
                 status(HttpStatus.SERVICE_UNAVAILABLE),

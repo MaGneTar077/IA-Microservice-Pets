@@ -17,6 +17,6 @@ public class GeminiProperties {
     private String modelFallback;
     private String baseUrl;
     private int timeoutSeconds;
-    private int maxRetries = 3;
+    private int maxRetries = 1;
     private long retryBackoffMillis = 1000;
 }

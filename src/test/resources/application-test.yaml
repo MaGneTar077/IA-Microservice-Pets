@@ -1,0 +1,21 @@
+spring:
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration
+      - org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
+      - org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration
+      - org.springframework.boot.autoconfigure.jdbc.JdbcTemplateAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.jpa.JpaRepositoriesAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.redis.RedisRepositoriesAutoConfiguration
+      - com.google.cloud.spring.autoconfigure.core.GcpContextAutoConfiguration
+      - com.google.cloud.spring.autoconfigure.pubsub.GcpPubSubAutoConfiguration
+      - com.google.cloud.spring.autoconfigure.pubsub.GcpPubSubReactiveAutoConfiguration
+      - com.google.cloud.spring.autoconfigure.pubsub.health.PubSubHealthIndicatorAutoConfiguration
+      - com.google.cloud.spring.autoconfigure.pubsub.health.PubSubSubscriptionHealthIndicatorAutoConfiguration
+
+# Únicas propiedades sin default que algún bean llega a leer en este perfil
+# (GeminiProperties se instancia siempre, con o sin datasource/redis/gcp).
+gemini:
+  api-key: test-key
+  model: gemini-test

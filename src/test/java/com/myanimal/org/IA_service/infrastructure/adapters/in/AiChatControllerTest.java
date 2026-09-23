@@ -16,6 +16,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import com.myanimal.org.IA_service.application.dto.ChatResult;
+import com.myanimal.org.IA_service.domain.exception.AiModelUnavailableException;
 import com.myanimal.org.IA_service.domain.ports.in.ChatUseCase;
 import com.myanimal.org.IA_service.infrastructure.config.SecurityConfig;
 
@@ -52,5 +53,18 @@ class AiChatControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"message\":\"\"}"))
                 .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void modeloNoDisponibleDevuelve503YNoUn500Generico() throws Exception {
+        when(chatUseCase.chat(anyString()))
+                .thenThrow(new AiModelUnavailableException("El asistente no está disponible."));
+
+        mockMvc.perform(post("/api/ai/chat/text")
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"message\":\"¿Cada cuánto debo desparasitar a mi perro?\"}"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.error").value("MODEL_UNAVAILABLE"));
     }
 }

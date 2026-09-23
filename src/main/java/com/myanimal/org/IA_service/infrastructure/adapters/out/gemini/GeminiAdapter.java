@@ -5,12 +5,17 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import java.util.concurrent.TimeoutException;
+
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientRequestException;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.myanimal.org.IA_service.domain.exception.AiContentBlockedException;
 import com.myanimal.org.IA_service.domain.exception.AiModelException;
 import com.myanimal.org.IA_service.domain.exception.AiModelUnavailableException;
@@ -22,6 +27,7 @@ import com.myanimal.org.IA_service.domain.model.AiUsage;
 import com.myanimal.org.IA_service.domain.ports.out.AiModelPort;
 import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiCandidate;
 import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiContent;
+import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiErrorResponse;
 import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiGenerateRequest;
 import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiGenerateResponse;
 import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiResponsePart;
@@ -30,6 +36,7 @@ import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.Gemini
 import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiUsageMetadata;
 import com.myanimal.org.IA_service.infrastructure.config.GeminiProperties;
 
+import io.netty.handler.timeout.ReadTimeoutException;
 import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
@@ -41,10 +48,12 @@ public class GeminiAdapter implements AiModelPort {
 
     private final WebClient geminiWebClient;
     private final GeminiProperties properties;
+    private final ObjectMapper objectMapper;
 
-    public GeminiAdapter(WebClient geminiWebClient, GeminiProperties properties) {
+    public GeminiAdapter(WebClient geminiWebClient, GeminiProperties properties, ObjectMapper objectMapper) {
         this.geminiWebClient = geminiWebClient;
         this.properties = properties;
+        this.objectMapper = objectMapper;
     }
 
     @Override
@@ -96,11 +105,51 @@ public class GeminiAdapter implements AiModelPort {
                     .bodyToMono(GeminiGenerateResponse.class)
                     .block();
         } catch (WebClientResponseException ex) {
+            logGeminiError(ex);
             if (isRetryable(ex.getStatusCode())) {
                 throw new GeminiRetryableException(ex);
             }
             throw new AiModelException("Gemini respondió con error " + ex.getStatusCode().value(), ex);
+        } catch (WebClientRequestException ex) {
+            if (isTimeout(ex)) {
+                log.warn("Timeout de lectura esperando respuesta de Gemini (modelo={})", model);
+                throw new GeminiRetryableException(ex);
+            }
+            log.warn("Fallo de conexión al llamar a Gemini (modelo={}): {}",
+                    model, ex.getMostSpecificCause().getMessage());
+            throw new AiModelException("No se pudo contactar con el modelo de IA.", ex);
         }
+    }
+
+    private boolean isTimeout(WebClientRequestException ex) {
+        Throwable cause = ex;
+        while (cause != null) {
+            if (cause instanceof ReadTimeoutException || cause instanceof TimeoutException) {
+                return true;
+            }
+            cause = cause.getCause();
+        }
+        return false;
+    }
+
+    private void logGeminiError(WebClientResponseException ex) {
+        log.warn("Gemini respondió {}: {}", ex.getStatusCode().value(), extractErrorMessage(ex));
+    }
+
+    private String extractErrorMessage(WebClientResponseException ex) {
+        String body = ex.getResponseBodyAsString();
+        if (body == null || body.isBlank()) {
+            return "sin detalle";
+        }
+        try {
+            GeminiErrorResponse errorResponse = objectMapper.readValue(body, GeminiErrorResponse.class);
+            if (errorResponse.getError() != null && errorResponse.getError().getMessage() != null) {
+                return errorResponse.getError().getMessage();
+            }
+        } catch (JsonProcessingException ex2) {
+            // El cuerpo no tiene el formato de error esperado; no se loguea el body crudo.
+        }
+        return "sin detalle";
     }
 
     private boolean isRetryable(HttpStatusCode status) {

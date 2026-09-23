@@ -26,6 +26,10 @@ Si te encuentras escribiendo una validación de dominio aquí, va en el microser
 - Las tablas se crean a mano por SQL en Supabase. El DDL está en el README.
 - Modelos confirmados en `.env` (principal / fallback): `gemini-3.8-flash` / `gemini-3.6-flash`.
   Vienen de `GEMINI_MODEL` y `GEMINI_MODEL_FALLBACK`, nunca hardcoded en el `GeminiAdapter`.
+- `GEMINI_TIMEOUT=20` (antes 60) y `GEMINI_MAX_RETRIES=1` (antes 3): con reintentos +
+  fallback encima, un timeout por intento de 60s hacía que el peor caso superara los 5
+  minutos — el móvil y Cloud Run se rinden mucho antes. Ver también la entrada de
+  timeouts en "Trampas conocidas".
 
 ## Servicios vecinos
 
@@ -92,12 +96,24 @@ el modelo alucina un `petId` ajeno, `pet-service` responde 403 y ese 403 vuelve 
   y el wildcard evita `COPY failed: no source files were specified`.
 - En local, `gcloud auth application-default login` (no `gcloud auth login`).
 - Secretos en Secret Manager, nunca como env vars planas.
-- `IaServiceApplicationTests.contextLoads` (`@SpringBootTest` completo) depende de
-  conectividad viva a Supabase (Transaction Pooler), Upstash Redis y GCP: es intermitente
-  en local. En una corrida falló con `Unable to determine Dialect without JDBC metadata`
-  al construir el `EntityManagerFactory` — no relacionado con esta etapa (no toca JPA),
-  parece un hiccup del pooler. Si se repite seguido, vale la pena aislar ese test con un
-  perfil o datasource de prueba en vez de pegarle a Supabase real en cada `mvn test`.
+- Hibernate autodetectaba el dialecto consultando metadatos JDBC contra el Transaction
+  Pooler, y esa consulta fallaba intermitentemente (`Unable to determine Dialect without
+  JDBC metadata`). Fix: dialecto explícito (`hibernate.dialect: PostgreSQLDialect`) +
+  `hibernate.boot.allow_jdbc_metadata_access: false` en `application.yaml`.
+- Los tests (`src/test/resources/application-test.yaml`, perfil `test`) excluyen
+  autoconfig de datasource/JPA, Redis y GCP Pub/Sub. `IaServiceApplicationTests` no toca
+  Supabase, Upstash ni GCP reales — corre 100% offline.
+- Un timeout de Gemini (Gemini no responde nada, a diferencia de un 503) llega como
+  `WebClientRequestException` con causa `ReadTimeoutException`, no como
+  `WebClientResponseException` — hay que capturarlo aparte. `GeminiAdapter` lo trata
+  como retryable (mismo camino que 503/429) y distingue en el log "Timeout de lectura"
+  de "Fallo de conexión" (DNS, conexión rechazada, etc., que sí se loguea distinto pero
+  no se reintenta — se lanza `AiModelException` de inmediato, igual que un 4xx).
+- **Idea futura, no implementada**: usar un timeout más generoso en el primer intento
+  (ej. 20s) y uno más corto en los reintentos (ej. 8-10s), ya que si Gemini está lento
+  una vez es probable que siga lento. Se descartó por ahora para no complicar el timeout
+  único de `gemini.timeout-seconds`; revisar si `GEMINI_TIMEOUT=20` + `GEMINI_MAX_RETRIES=1`
+  no es suficiente en producción.
 
 ## Estado actual
 
