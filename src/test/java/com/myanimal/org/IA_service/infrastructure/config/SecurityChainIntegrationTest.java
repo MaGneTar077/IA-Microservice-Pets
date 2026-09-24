@@ -14,6 +14,7 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import com.myanimal.org.IA_service.domain.ports.in.ChatUseCase;
 import com.myanimal.org.IA_service.infrastructure.adapters.in.AiChatController;
+import com.myanimal.org.IA_service.infrastructure.adapters.in.attachment.AttachmentProcessor;
 import com.myanimal.org.IA_service.infrastructure.security.JwtProperties;
 import com.myanimal.org.IA_service.infrastructure.security.UserContextProvider;
 
@@ -36,6 +37,9 @@ class SecurityChainIntegrationTest {
 
     @MockitoBean
     private UserContextProvider userContextProvider;
+
+    @MockitoBean
+    private AttachmentProcessor attachmentProcessor;
 
     @Test
     void sinAuthorizationDevuelve401() throws Exception {

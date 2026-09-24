@@ -1,11 +1,11 @@
 package com.myanimal.org.IA_service.infrastructure.adapters.out.gemini;
 
+import java.util.Base64;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
-import java.util.stream.Collectors;
-
 import java.util.concurrent.TimeoutException;
+import java.util.stream.Collectors;
 
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
@@ -20,6 +20,7 @@ import com.myanimal.org.IA_service.domain.exception.AiContentBlockedException;
 import com.myanimal.org.IA_service.domain.exception.AiModelException;
 import com.myanimal.org.IA_service.domain.exception.AiModelUnavailableException;
 import com.myanimal.org.IA_service.domain.model.AiMessage;
+import com.myanimal.org.IA_service.domain.model.AiPart;
 import com.myanimal.org.IA_service.domain.model.AiRequest;
 import com.myanimal.org.IA_service.domain.model.AiResponse;
 import com.myanimal.org.IA_service.domain.model.AiRole;
@@ -30,9 +31,10 @@ import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.Gemini
 import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiErrorResponse;
 import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiGenerateRequest;
 import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiGenerateResponse;
+import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiInlineData;
+import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiPart;
 import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiResponsePart;
 import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiSystemInstruction;
-import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiTextPart;
 import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiUsageMetadata;
 import com.myanimal.org.IA_service.infrastructure.config.GeminiProperties;
 
@@ -221,9 +223,9 @@ public class GeminiAdapter implements AiModelPort {
                 .build();
     }
 
-    private GeminiGenerateRequest toGeminiRequest(AiRequest request) {
+    GeminiGenerateRequest toGeminiRequest(AiRequest request) {
         GeminiSystemInstruction systemInstruction = GeminiSystemInstruction.builder()
-                .parts(List.of(GeminiTextPart.builder().text(request.getSystemInstruction()).build()))
+                .parts(List.of(GeminiPart.builder().text(request.getSystemInstruction()).build()))
                 .build();
 
         List<GeminiContent> contents = request.getMessages().stream()
@@ -237,14 +239,26 @@ public class GeminiAdapter implements AiModelPort {
     }
 
     private GeminiContent toGeminiContent(AiMessage message) {
-        List<GeminiTextPart> parts = message.getParts().stream()
-                .map(part -> GeminiTextPart.builder().text(part.getText()).build())
+        List<GeminiPart> parts = message.getParts().stream()
+                .map(this::toGeminiPart)
                 .toList();
 
         return GeminiContent.builder()
                 .role(message.getRole() == AiRole.MODEL ? "model" : "user")
                 .parts(parts)
                 .build();
+    }
+
+    private GeminiPart toGeminiPart(AiPart part) {
+        if (part.getData() != null) {
+            return GeminiPart.builder()
+                    .inlineData(GeminiInlineData.builder()
+                            .mimeType(part.getMimeType())
+                            .data(Base64.getEncoder().encodeToString(part.getData()))
+                            .build())
+                    .build();
+        }
+        return GeminiPart.builder().text(part.getText()).build();
     }
 
     private static class GeminiRetryableException extends RuntimeException {

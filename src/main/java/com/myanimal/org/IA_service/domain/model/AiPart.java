@@ -12,4 +12,14 @@ import lombok.NoArgsConstructor;
 public class AiPart {
 
     private String text;
+    private String mimeType;
+    private byte[] data;
+
+    public static AiPart ofText(String text) {
+        return AiPart.builder().text(text).build();
+    }
+
+    public static AiPart ofBinary(String mimeType, byte[] data) {
+        return AiPart.builder().mimeType(mimeType).data(data).build();
+    }
 }

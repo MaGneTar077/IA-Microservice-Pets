@@ -16,5 +16,5 @@ import lombok.NoArgsConstructor;
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class GeminiSystemInstruction {
 
-    private List<GeminiTextPart> parts;
+    private List<GeminiPart> parts;
 }

@@ -1,6 +1,4 @@
-package com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto;
-
-import java.util.List;
+package com.myanimal.org.IA_service.infrastructure.adapters.out.storage.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
@@ -14,8 +12,7 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 @NoArgsConstructor
 @JsonIgnoreProperties(ignoreUnknown = true)
-public class GeminiContent {
+public class SupabaseSignedUrlRequest {
 
-    private String role;
-    private List<GeminiPart> parts;
+    private long expiresIn;
 }

@@ -10,7 +10,12 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import com.myanimal.org.IA_service.domain.exception.AiContentBlockedException;
 import com.myanimal.org.IA_service.domain.exception.AiModelException;
 import com.myanimal.org.IA_service.domain.exception.AiModelUnavailableException;
+import com.myanimal.org.IA_service.domain.exception.AttachmentStorageException;
+import com.myanimal.org.IA_service.domain.exception.AttachmentsTooLargeException;
 import com.myanimal.org.IA_service.domain.exception.ConversationNotFoundException;
+import com.myanimal.org.IA_service.domain.exception.InvalidChatRequestException;
+import com.myanimal.org.IA_service.domain.exception.TooManyAttachmentsException;
+import com.myanimal.org.IA_service.domain.exception.UnsupportedAttachmentTypeException;
 import com.myanimal.org.IA_service.infrastructure.adapters.in.dto.ErrorResponse;
 
 import lombok.extern.slf4j.Slf4j;
@@ -47,6 +52,31 @@ public class ApiExceptionHandler {
     public ResponseEntity<ErrorResponse> handleConversationNotFound(ConversationNotFoundException ex) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
                 .body(new ErrorResponse("CONVERSATION_NOT_FOUND", "La conversación no existe."));
+    }
+
+    @ExceptionHandler(UnsupportedAttachmentTypeException.class)
+    public ResponseEntity<ErrorResponse> handleUnsupportedAttachmentType(UnsupportedAttachmentTypeException ex) {
+        return ResponseEntity.status(HttpStatus.UNSUPPORTED_MEDIA_TYPE)
+                .body(new ErrorResponse("UNSUPPORTED_ATTACHMENT_TYPE", ex.getMessage()));
+    }
+
+    @ExceptionHandler({ TooManyAttachmentsException.class, AttachmentsTooLargeException.class })
+    public ResponseEntity<ErrorResponse> handleAttachmentLimits(RuntimeException ex) {
+        return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE)
+                .body(new ErrorResponse("ATTACHMENT_LIMIT_EXCEEDED", ex.getMessage()));
+    }
+
+    @ExceptionHandler(AttachmentStorageException.class)
+    public ResponseEntity<ErrorResponse> handleAttachmentStorage(AttachmentStorageException ex) {
+        log.error("Error al hablar con Supabase Storage", ex);
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                .body(new ErrorResponse("ATTACHMENT_STORAGE_ERROR",
+                        "Ocurrió un error al procesar tus archivos adjuntos. Intenta de nuevo."));
+    }
+
+    @ExceptionHandler(InvalidChatRequestException.class)
+    public ResponseEntity<ErrorResponse> handleInvalidChatRequest(InvalidChatRequestException ex) {
+        return ResponseEntity.badRequest().body(new ErrorResponse("INVALID_REQUEST", ex.getMessage()));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

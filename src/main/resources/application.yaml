@@ -81,11 +81,22 @@ gemini:
   retry-backoff-ms: ${GEMINI_RETRY_BACKOFF_MS:1000}
   max-tool-iterations: ${GEMINI_MAX_TOOL_ITERATIONS:5}
   max-history-messages: ${GEMINI_MAX_HISTORY:20}
+  max-history-attachments: ${GEMINI_MAX_HISTORY_ATTACHMENTS:2}
 
 security:
   jwt:
     secret: ${JWT_SECRET}
     user-id-claim: ${JWT_USER_ID_CLAIM:id}
+
+supabase:
+  url: ${SUPABASE_URL}
+  service-key: ${SUPABASE_SERVICE_KEY}
+  bucket: ${SUPABASE_BUCKET:ai-attachments}
+  signed-url-ttl-seconds: ${SUPABASE_SIGNED_URL_TTL:3600}
+
+uploads:
+  max-files-per-request: 5
+  max-total-bytes: 15728640
 
 services:
   gateway-url: ${GATEWAY_URL}

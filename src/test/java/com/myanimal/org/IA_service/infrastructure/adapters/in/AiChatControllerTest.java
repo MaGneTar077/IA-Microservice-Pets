@@ -32,6 +32,7 @@ import com.myanimal.org.IA_service.application.dto.ChatResult;
 import com.myanimal.org.IA_service.domain.exception.AiModelUnavailableException;
 import com.myanimal.org.IA_service.domain.model.UserContext;
 import com.myanimal.org.IA_service.domain.ports.in.ChatUseCase;
+import com.myanimal.org.IA_service.infrastructure.adapters.in.attachment.AttachmentProcessor;
 import com.myanimal.org.IA_service.infrastructure.config.SecurityConfig;
 import com.myanimal.org.IA_service.infrastructure.security.JwtProperties;
 import com.myanimal.org.IA_service.infrastructure.security.UserContextProvider;
@@ -58,6 +59,9 @@ class AiChatControllerTest {
     @MockitoBean
     private UserContextProvider userContextProvider;
 
+    @MockitoBean
+    private AttachmentProcessor attachmentProcessor;
+
     @Value("${security.jwt.secret}")
     private String jwtSecret;
 
@@ -80,7 +84,7 @@ class AiChatControllerTest {
 
     @Test
     void mensajeValidoDevuelve200() throws Exception {
-        when(chatUseCase.chat(any(), isNull(), anyString())).thenReturn(ChatResult.builder()
+        when(chatUseCase.chat(any(), isNull(), anyString(), any())).thenReturn(ChatResult.builder()
                 .conversationId(conversationId)
                 .reply("Cada 3 meses, aproximadamente.")
                 .model("gemini-test")
@@ -107,7 +111,7 @@ class AiChatControllerTest {
 
     @Test
     void modeloNoDisponibleDevuelve503YNoUn500Generico() throws Exception {
-        when(chatUseCase.chat(any(), isNull(), anyString()))
+        when(chatUseCase.chat(any(), isNull(), anyString(), any()))
                 .thenThrow(new AiModelUnavailableException("El asistente no está disponible."));
 
         mockMvc.perform(post("/api/ai/chat/text")
@@ -120,7 +124,7 @@ class AiChatControllerTest {
 
     @Test
     void continuaConversacionExistenteEnviandoElConversationId() throws Exception {
-        when(chatUseCase.chat(any(), eq(conversationId), anyString())).thenReturn(ChatResult.builder()
+        when(chatUseCase.chat(any(), eq(conversationId), anyString(), any())).thenReturn(ChatResult.builder()
                 .conversationId(conversationId)
                 .reply("Debería pesar entre 25 y 30 kilos.")
                 .model("gemini-test")

@@ -24,3 +24,7 @@ security:
   jwt:
     secret: test-secret-0123456789abcdef0123456789
     user-id-claim: id
+
+supabase:
+  url: http://supabase.test
+  service-key: test-service-key

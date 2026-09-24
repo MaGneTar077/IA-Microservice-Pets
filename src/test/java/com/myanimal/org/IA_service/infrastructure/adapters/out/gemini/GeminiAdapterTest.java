@@ -3,6 +3,7 @@ package com.myanimal.org.IA_service.infrastructure.adapters.out.gemini;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.util.Base64;
 import java.util.List;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -134,6 +135,33 @@ class GeminiAdapterTest {
                         .parts(List.of(AiPart.builder().text("hola").build()))
                         .build()))
                 .build();
+    }
+
+    @Test
+    void mapeaUnAiPartBinarioAInlineDataEnBase64() {
+        GeminiAdapter adapter = new GeminiAdapter(
+                WebClient.builder().baseUrl("http://gemini.test").build(), defaultProperties(), new ObjectMapper());
+        byte[] photoBytes = { 1, 2, 3, 4 };
+
+        AiRequest request = AiRequest.builder()
+                .systemInstruction("system")
+                .messages(List.of(AiMessage.builder()
+                        .role(AiRole.USER)
+                        .parts(List.of(
+                                AiPart.ofText("¿qué raza es?"),
+                                AiPart.ofBinary("image/jpeg", photoBytes)))
+                        .build()))
+                .build();
+
+        var geminiRequest = adapter.toGeminiRequest(request);
+        var parts = geminiRequest.getContents().get(0).getParts();
+
+        assertThat(parts).hasSize(2);
+        assertThat(parts.get(0).getText()).isEqualTo("¿qué raza es?");
+        assertThat(parts.get(0).getInlineData()).isNull();
+        assertThat(parts.get(1).getText()).isNull();
+        assertThat(parts.get(1).getInlineData().getMimeType()).isEqualTo("image/jpeg");
+        assertThat(parts.get(1).getInlineData().getData()).isEqualTo(Base64.getEncoder().encodeToString(photoBytes));
     }
 
     @Test

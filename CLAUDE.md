@@ -147,6 +147,35 @@ el modelo alucina un `petId` ajeno, `pet-service` responde 403 y ese 403 vuelve 
   no tienen test de integración contra Postgres real en esta etapa — solo `ChatServiceTest`
   con `ConversationRepositoryPort` mockeado. Cuando se necesite probar el mapeo de
   entidades/jsonb de verdad, usar Testcontainers con Postgres en vez de pegarle a Supabase.
+- **Adjuntos (etapa 2, parte C)**: `GeminiTextPart` se renombró a `GeminiPart` y ahora
+  también carga `GeminiInlineData` (`inline_data`/`mime_type`/`data` en base64) — ambos con
+  `@JsonInclude(NON_NULL)` puesto directamente en la clase, porque `GeminiWebClientConfig`
+  arma su `WebClient` con `WebClient.builder()` estático (no con el `WebClient.Builder` bean
+  autoconfigurado de Boot), así que no hay garantía de heredar `spring.jackson.default-
+  property-inclusion: non_null` — sin el `@JsonInclude` explícito se mandaría `"text":null`
+  o `"inline_data":null` en cada parte según cuál campo esté vacío.
+- El MIME de un adjunto se detecta por los primeros bytes (`MagicByteMimeDetector`), sin
+  librerías nuevas. Dos límites conocidos de esa heurística: HEIC vs. HEIF se distingue por
+  el "brand" de 4 letras del box `ftyp` (`heic`/`heix`/... vs. `mif1`/`msf1`), que no es
+  100% confiable en archivos exóticos; y el detector **nunca** emite el MIME
+  `audio/mp3` (solo `audio/mpeg`, que es el estándar) aunque `audio/mp3` siga en la lista
+  blanca por si algún día se acepta ese valor de otra fuente.
+- `FileStoragePort.upload/download` suben y bajan bytes crudos contra la REST API de
+  Supabase Storage; la key nunca se loguea (solo el código de estado). Los adjuntos se
+  suben a Storage **antes** de abrir la transacción corta que guarda el mensaje del
+  usuario (mismo principio que con Gemini: nada de I/O lento con una transacción abierta).
+- `ChatService` reenvía el binario real de un adjunto solo si su turno está dentro de las
+  últimas `gemini.max-history-attachments` posiciones de la ventana ya recortada por
+  `gemini.max-history-messages` (no "las últimas N que tengan adjunto": son las últimas N
+  posiciones, tengan o no adjunto). Los adjuntos fuera de esa ventana se re-descargan de
+  Supabase Storage en **cada** turno nuevo — incluido el adjunto que se acaba de subir en
+  la misma petición, que técnicamente ya tenemos en memoria. No se optimizó ese caso por
+  simplicidad (un único code path); si el costo del round-trip extra importa, se puede
+  reutilizar el `byte[]` original del turno actual en vez de descargarlo de nuevo.
+- El endpoint multipart `POST /api/ai/chat` (sin `/text`) se adelantó de la Parte D a la
+  Parte C porque, sin él, los adjuntos no eran probables de punta a punta. `POST
+  /api/ai/chat/text` (JSON, solo texto) sigue vivo — su eliminación es explícitamente
+  trabajo de la Parte D, no de esta.
 
 ## Estado actual
 
