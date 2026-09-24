@@ -176,14 +176,32 @@ el modelo alucina un `petId` ajeno, `pet-service` responde 403 y ese 403 vuelve 
   Parte C porque, sin él, los adjuntos no eran probables de punta a punta. `POST
   /api/ai/chat/text` (JSON, solo texto) sigue vivo — su eliminación es explícitamente
   trabajo de la Parte D, no de esta.
+- **Parte D**: `POST /api/ai/chat/text` y su `ChatRequestDto` se eliminaron (el multipart
+  de la parte C ya cubre todo). El `AiChatControllerTest` que lo probaba se borró entero
+  — `AiChatMultipartControllerTest` ya cubre lo mismo por el endpoint que queda.
+- `ConversationRepositoryPort` ganó un 6º método, `findMessages(conversationId, limit,
+  offset)`, que **no** estaba en el contrato original de la parte B. `findRecentMessages`
+  solo sirve para "los últimos N para mandarle a Gemini" (sin offset); `GET
+  /conversations/{id}/messages` necesita paginación cronológica ascendente de verdad con
+  offset arbitrario, que es una consulta distinta.
+- `ConversationQueryService` (nuevo, aplica a `GET /api/ai/conversations` y
+  `GET /api/ai/conversations/{id}/messages`) recorta `limit` a `[1, 50]` (default 20 si
+  viene `<1`) y `offset` a `>=0` — el brief solo pide "máximo 50", así que se interpretó
+  como un recorte silencioso, no como un 400.
+- Los adjuntos del listado de mensajes se firman **al momento de responder**
+  (`FileStoragePort.signedUrl` con `supabase.signed-url-ttl-seconds`), nunca se guarda una
+  URL. `ConversationNotFoundException` (ya existía desde la parte B) se reutiliza para
+  "conversación ajena o inexistente" en ambos endpoints de lectura → siempre 404, nunca 403
+  (un 403 confirmaría que el id existe).
 
 ## Estado actual
 
 - [x] Repo, `pom.xml`, `.gitignore`, `README.md`, `application.yml`, `.env.example`
 - [x] **Etapa 1** — esqueleto hexagonal + `AiModelPort` y `GeminiAdapter` con WebClient,
       endpoint de texto plano.
-- [ ] Etapa 2 — multimodal (`inline_data` imagen y audio) + persistencia → F1, F2 ← siguiente
-- [ ] Etapa 3 — `AiTool`, registry, executor, loop con guard de 5 iteraciones → F3, F4
+- [x] **Etapa 2** — JWT, conversaciones persistentes, adjuntos multimodales
+      (`inline_data` imagen/audio) y endpoints de lectura → F1, F2.
+- [ ] Etapa 3 — `AiTool`, registry, executor, loop con guard de 5 iteraciones → F3, F4 ← siguiente
 - [ ] Etapa 4 — structured output para documentos → F5
 - [ ] Etapa 5 — suscripciones push y sugerencias de cuidado → F6
 - [ ] Etapa 6 — integración con MyAnimaLogVet

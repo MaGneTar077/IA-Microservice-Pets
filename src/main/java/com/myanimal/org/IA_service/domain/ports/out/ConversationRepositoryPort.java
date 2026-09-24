@@ -18,4 +18,9 @@ public interface ConversationRepositoryPort {
     Message append(UUID conversationId, Message message);
 
     List<Message> findRecentMessages(UUID conversationId, int limit);
+
+    // Paginación cronológica ascendente para GET /conversations/{id}/messages (parte D):
+    // findRecentMessages solo cubre "los últimos N para mandarle a Gemini", no un offset
+    // arbitrario para listar. No estaba en el contrato original de la parte B.
+    List<Message> findMessages(UUID conversationId, int limit, int offset);
 }

@@ -44,4 +44,9 @@ public class NoopConversationRepositoryPort implements ConversationRepositoryPor
     public List<Message> findRecentMessages(UUID conversationId, int limit) {
         return List.of();
     }
+
+    @Override
+    public List<Message> findMessages(UUID conversationId, int limit, int offset) {
+        return List.of();
+    }
 }

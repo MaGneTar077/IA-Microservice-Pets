@@ -13,4 +13,9 @@ public interface MessageJpaRepository extends JpaRepository<MessageEntity, UUID>
             + "order by created_at desc limit :limit", nativeQuery = true)
     List<MessageEntity> findRecentByConversationId(@Param("conversationId") UUID conversationId,
             @Param("limit") int limit);
+
+    @Query(value = "select * from ai_message where conversation_id = :conversationId "
+            + "order by created_at asc limit :limit offset :offset", nativeQuery = true)
+    List<MessageEntity> findByConversationId(@Param("conversationId") UUID conversationId,
+            @Param("limit") int limit, @Param("offset") int offset);
 }

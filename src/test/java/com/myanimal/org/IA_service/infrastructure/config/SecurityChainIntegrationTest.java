@@ -43,9 +43,9 @@ class SecurityChainIntegrationTest {
 
     @Test
     void sinAuthorizationDevuelve401() throws Exception {
-        mockMvc.perform(post("/api/ai/chat/text")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"message\":\"hola\"}"))
+        mockMvc.perform(post("/api/ai/chat")
+                        .contentType(MediaType.MULTIPART_FORM_DATA)
+                        .param("message", "hola"))
                 .andExpect(status().isUnauthorized());
     }
 }

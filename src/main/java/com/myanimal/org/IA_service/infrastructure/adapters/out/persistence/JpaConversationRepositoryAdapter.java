@@ -74,6 +74,13 @@ public class JpaConversationRepositoryAdapter implements ConversationRepositoryP
         return ascending;
     }
 
+    @Override
+    public List<Message> findMessages(UUID conversationId, int limit, int offset) {
+        return messageJpaRepository.findByConversationId(conversationId, limit, offset).stream()
+                .map(this::toMessage)
+                .toList();
+    }
+
     private Conversation toConversation(ConversationEntity entity) {
         return Conversation.builder()
                 .id(entity.getId())
