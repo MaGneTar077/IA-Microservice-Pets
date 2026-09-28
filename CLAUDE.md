@@ -193,6 +193,61 @@ el modelo alucina un `petId` ajeno, `pet-service` responde 403 y ese 403 vuelve 
   URL. `ConversationNotFoundException` (ya existía desde la parte B) se reutiliza para
   "conversación ajena o inexistente" en ambos endpoints de lectura → siempre 404, nunca 403
   (un 403 confirmaría que el id existe).
+- **Etapa 3, parte A-D1 (checkpoint, `listar_mascotas` de punta a punta)**:
+  - `AiTool.describe(args)` es un método `default` que no estaba en la firma que dio el
+    brief (solo 4 métodos) — se agregó porque E2 pide un `descripcion` legible para la
+    tarjeta de confirmación y ningún método existente lo genera. El default humaniza el
+    nombre técnico (`crear_mascota` → "Crear mascota"); los tools con confirmación lo
+    sobrescriben. Nunca debería llegar el nombre técnico crudo a una tarjeta.
+  - `UserContext` ganó `username` (claim `username` del JWT, no configurable — a
+    diferencia del claim del id, el brief no pidió que este lo fuera). Rompe cualquier
+    `new UserContext(userId, jwt)` con 2 argumentos; ahora son 3
+    (`userId, username, rawJwt`).
+  - El system prompt pasó de string fijo a plantilla: se sigue cargando una vez al
+    arrancar (`systemPromptText`), pero `ChatLoopRunner.renderSystemPrompt` sustituye
+    `{fecha}`/`{dia_semana}`/`{username}` en cada llamada, con un `Clock` inyectado
+    (bean `Clock.systemUTC()`) para que sea testeable sin pegarle al reloj real.
+  - `thoughtSignature` **sí hizo falta**: Gemini lo devuelve junto al `functionCall` y
+    hay que reenviarlo tal cual en el turno del modelo al continuar la conversación
+    (`GeminiPart.thoughtSignature`, `AiPart.ofFunctionCall(..., thoughtSignature)`).
+  - Un `ai_message` con `rol='tool'` se reconstruye como **dos** turnos de Gemini al
+    armar el historial: uno `model` con el `functionCall` (id + thoughtSignature) y uno
+    `user` con el `functionResponse` — en vez de intentar preservar la agrupación
+    original si el modelo pidió varias funciones en la misma vuelta. `tool_args` guarda
+    un sobre `{callId, thoughtSignature, arguments}`; `tool_result` guarda
+    `{ok, data}` o `{ok: false, error}` — mismo shape que `ToolResult`.
+  - `Message.toolArgs`/`toolResult` (y `MessageEntity`) pasaron de `String` (placeholder
+    nulo de la etapa 2) a `Map<String, Object>` con `@JdbcTypeCode(SqlTypes.JSON)`,
+    porque ahora sí se escriben de verdad.
+  - El loop completo vive en `ChatLoopRunner` (`application.service`), no en
+    `ChatService`: lo comparten un mensaje de chat nuevo y (más adelante) la
+    confirmación de una pending action, que solo hace su paso inicial propio y termina
+    delegando aquí. `ChatService` quedó reducido a resolver/crear la conversación, subir
+    adjuntos y guardar el turno del usuario.
+  - **Un 401 de un servicio destino (pet-service ahora; medical/calendar-service
+    cuando existan) nunca se traduce a `functionResponse`.** Es la sesión expirando a
+    mitad del loop (los tokens duran 1h), no "el recurso no existe" — el modelo lo
+    malinterpretaría. `PetServiceAdapter` lo distingue con
+    `UpstreamSessionExpiredException` (NO la atrapa `ToolExecutor`, que solo atrapa
+    `ToolExecutionException`); `ChatLoopRunner` sí la atrapa alrededor de
+    `toolExecutor.execute(...)`, corta el loop y responde "tu sesión expiró" sin volver
+    a llamar a Gemini. Cualquier adapter de servicio destino nuevo debe seguir el mismo
+    patrón: 401 → `UpstreamSessionExpiredException`; otro 4xx/5xx con cuerpo →
+    `ToolExecutionException`; sin respuesta (timeout/conexión) → se deja propagar tal
+    cual, sin capturar nada.
+  - `PendingAction` (dominio + puerto + entidad JPA + adapter + fake de test) está
+    completo aunque los endpoints `POST /api/ai/actions/{id}/confirm|reject` **no**
+    — el loop ya crea la pending action de verdad (probado con un tool de prueba con
+    `requiresConfirmation=true`, ya que ningún tool real la pide todavía), pero nadie
+    puede confirmarla por HTTP hasta la parte E.
+  - Parte C acotada a `PetServicePort`/`PetServiceAdapter`. `ServicesWebClientConfig`
+    ya expone los 3 beans (`petServiceWebClient`, `medicalServiceWebClient`,
+    `calendarServiceWebClient`) porque es barato, pero `MedicalServicePort` y
+    `CalendarServicePort` no existen todavía — llegan con `registrar_vacuna`/
+    `agendar_cita` (D3/D4).
+  - Pendiente explícitamente para la próxima parada: D2-D4 (`crear_mascota`,
+    `registrar_vacuna`, `agendar_cita` — los tools que escriben) y la Parte E completa
+    (`POST /api/ai/actions/{id}/confirm|reject`).
 
 ## Estado actual
 
@@ -201,7 +256,9 @@ el modelo alucina un `petId` ajeno, `pet-service` responde 403 y ese 403 vuelve 
       endpoint de texto plano.
 - [x] **Etapa 2** — JWT, conversaciones persistentes, adjuntos multimodales
       (`inline_data` imagen/audio) y endpoints de lectura → F1, F2.
-- [ ] Etapa 3 — `AiTool`, registry, executor, loop con guard de 5 iteraciones → F3, F4 ← siguiente
+- [ ] Etapa 3 — `AiTool`, registry, executor, loop con guard de 5 iteraciones → F3, F4.
+      Partes A-D1 listas (`listar_mascotas` de punta a punta); faltan D2-D4 (tools que
+      escriben) y la parte E (confirmar/rechazar) ← siguiente
 - [ ] Etapa 4 — structured output para documentos → F5
 - [ ] Etapa 5 — suscripciones push y sugerencias de cuidado → F6
 - [ ] Etapa 6 — integración con MyAnimaLogVet

@@ -1,5 +1,7 @@
 package com.myanimal.org.IA_service.application.dto;
 
+import java.time.Instant;
+import java.util.Map;
 import java.util.UUID;
 
 import lombok.AllArgsConstructor;
@@ -11,10 +13,11 @@ import lombok.NoArgsConstructor;
 @Builder
 @AllArgsConstructor
 @NoArgsConstructor
-public class ChatResult {
+public class PendingActionDto {
 
-    private UUID conversationId;
-    private String reply;
-    private String model;
-    private PendingActionDto pendingAction;
+    private UUID id;
+    private String tool;
+    private String descripcion;
+    private Map<String, Object> args;
+    private Instant expiresAt;
 }

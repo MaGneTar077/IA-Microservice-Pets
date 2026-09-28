@@ -60,7 +60,7 @@ class ConversationsControllerTest {
 
     @BeforeEach
     void setUp() {
-        when(userContextProvider.current()).thenReturn(new UserContext(userId, "fake.jwt.token"));
+        when(userContextProvider.current()).thenReturn(new UserContext(userId, "Ana", "fake.jwt.token"));
 
         SecretKey key = Keys.hmacShaKeyFor(jwtSecret.getBytes(StandardCharsets.UTF_8));
         bearerToken = "Bearer " + Jwts.builder()

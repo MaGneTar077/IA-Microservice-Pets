@@ -21,4 +21,5 @@ public class GeminiProperties {
     private long retryBackoffMillis = 1000;
     private int maxHistoryMessages = 20;
     private int maxHistoryAttachments = 2;
+    private int maxToolIterations = 5;
 }

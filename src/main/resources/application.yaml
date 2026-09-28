@@ -98,8 +98,15 @@ uploads:
   max-files-per-request: 5
   max-total-bytes: 15728640
 
+app:
+  timezone: ${APP_TIMEZONE:America/Bogota}
+
 services:
   gateway-url: ${GATEWAY_URL}
+  pet-service-url: ${PET_SERVICE_URL:http://localhost:8081}
+  medical-service-url: ${MEDICAL_SERVICE_URL:http://localhost:3000}
+  calendar-service-url: ${CALENDAR_SERVICE_URL:https://calendar-microservice-20369076707.us-central1.run.app}
+  timeout-seconds: ${SERVICES_TIMEOUT:10}
 
 ratelimit:
   chat:

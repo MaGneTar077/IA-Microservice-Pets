@@ -71,7 +71,7 @@ class AiChatMultipartControllerTest {
     @BeforeEach
     void setUp() {
         when(userContextProvider.current()).thenReturn(new com.myanimal.org.IA_service.domain.model.UserContext(
-                userId, "fake.jwt.token"));
+                userId, "Ana", "fake.jwt.token"));
 
         SecretKey key = Keys.hmacShaKeyFor(jwtSecret.getBytes(StandardCharsets.UTF_8));
         bearerToken = "Bearer " + Jwts.builder()

@@ -1,28 +1,26 @@
 package com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto;
 
+import java.util.Map;
+
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
-import com.fasterxml.jackson.annotation.JsonProperty;
 
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+/** Misma forma para el functionCall que viaja en la respuesta de Gemini y el que se
+ * reenvía como parte del turno del modelo al continuar la conversación. */
 @Data
 @Builder
 @AllArgsConstructor
 @NoArgsConstructor
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonIgnoreProperties(ignoreUnknown = true)
-public class GeminiPart {
+public class GeminiFunctionCall {
 
-    private String text;
-
-    @JsonProperty("inline_data")
-    private GeminiInlineData inlineData;
-
-    private GeminiFunctionCall functionCall;
-    private GeminiFunctionResponse functionResponse;
-    private String thoughtSignature;
+    private String id;
+    private String name;
+    private Map<String, Object> args;
 }

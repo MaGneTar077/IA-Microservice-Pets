@@ -19,6 +19,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.myanimal.org.IA_service.domain.exception.AiContentBlockedException;
 import com.myanimal.org.IA_service.domain.exception.AiModelException;
 import com.myanimal.org.IA_service.domain.exception.AiModelUnavailableException;
+import com.myanimal.org.IA_service.domain.model.AiFunctionCall;
 import com.myanimal.org.IA_service.domain.model.AiMessage;
 import com.myanimal.org.IA_service.domain.model.AiPart;
 import com.myanimal.org.IA_service.domain.model.AiRequest;
@@ -29,12 +30,15 @@ import com.myanimal.org.IA_service.domain.ports.out.AiModelPort;
 import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiCandidate;
 import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiContent;
 import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiErrorResponse;
+import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiFunctionCall;
+import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiFunctionResponse;
 import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiGenerateRequest;
 import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiGenerateResponse;
 import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiInlineData;
 import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiPart;
 import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiResponsePart;
 import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiSystemInstruction;
+import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiTool;
 import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiUsageMetadata;
 import com.myanimal.org.IA_service.infrastructure.config.GeminiProperties;
 
@@ -184,19 +188,21 @@ public class GeminiAdapter implements AiModelPort {
         }
 
         String text = extractText(candidate);
+        List<AiFunctionCall> functionCalls = extractFunctionCalls(candidate);
         AiUsage usage = extractUsage(response.getUsageMetadata());
         long latencyMs = System.currentTimeMillis() - startedAt;
 
         log.info("Llamada a Gemini: modelo={} latenciaMs={} intento={} promptTokens={} outputTokens={} "
-                        + "thoughtsTokens={} totalTokens={}",
+                        + "thoughtsTokens={} totalTokens={} functionCalls={}",
                 modelUsed, latencyMs, attempt, usage.getPromptTokens(), usage.getOutputTokens(),
-                usage.getThoughtsTokens(), usage.getTotalTokens());
+                usage.getThoughtsTokens(), usage.getTotalTokens(), functionCalls.size());
 
         return AiResponse.builder()
                 .text(text)
                 .finishReason(finishReason)
                 .modelUsed(modelUsed)
                 .usage(usage)
+                .functionCalls(functionCalls)
                 .build();
     }
 
@@ -209,6 +215,20 @@ public class GeminiAdapter implements AiModelPort {
                 .map(GeminiResponsePart::getText)
                 .filter(Objects::nonNull)
                 .collect(Collectors.joining());
+    }
+
+    private List<AiFunctionCall> extractFunctionCalls(GeminiCandidate candidate) {
+        if (candidate.getContent() == null || candidate.getContent().getParts() == null) {
+            return List.of();
+        }
+        return candidate.getContent().getParts().stream()
+                .filter(part -> part.getFunctionCall() != null)
+                .map(part -> new AiFunctionCall(
+                        part.getFunctionCall().getId(),
+                        part.getFunctionCall().getName(),
+                        part.getFunctionCall().getArgs(),
+                        part.getThoughtSignature()))
+                .toList();
     }
 
     private AiUsage extractUsage(GeminiUsageMetadata metadata) {
@@ -232,9 +252,14 @@ public class GeminiAdapter implements AiModelPort {
                 .map(this::toGeminiContent)
                 .toList();
 
+        List<GeminiTool> tools = (request.getTools() == null || request.getTools().isEmpty())
+                ? null
+                : List.of(GeminiTool.builder().functionDeclarations(request.getTools()).build());
+
         return GeminiGenerateRequest.builder()
                 .systemInstruction(systemInstruction)
                 .contents(contents)
+                .tools(tools)
                 .build();
     }
 
@@ -250,6 +275,25 @@ public class GeminiAdapter implements AiModelPort {
     }
 
     private GeminiPart toGeminiPart(AiPart part) {
+        if (part.getFunctionCallName() != null) {
+            return GeminiPart.builder()
+                    .functionCall(GeminiFunctionCall.builder()
+                            .id(part.getFunctionCallId())
+                            .name(part.getFunctionCallName())
+                            .args(part.getFunctionCallArgs())
+                            .build())
+                    .thoughtSignature(part.getThoughtSignature())
+                    .build();
+        }
+        if (part.getFunctionResponseName() != null) {
+            return GeminiPart.builder()
+                    .functionResponse(GeminiFunctionResponse.builder()
+                            .id(part.getFunctionResponseId())
+                            .name(part.getFunctionResponseName())
+                            .response(part.getFunctionResponseData())
+                            .build())
+                    .build();
+        }
         if (part.getData() != null) {
             return GeminiPart.builder()
                     .inlineData(GeminiInlineData.builder()
