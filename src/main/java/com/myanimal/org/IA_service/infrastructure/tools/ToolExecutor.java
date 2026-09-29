@@ -35,4 +35,23 @@ public class ToolExecutor {
             return new ToolResult(false, null, ex.getMessage());
         }
     }
+
+    /**
+     * Igual contrato que execute() (nombre desconocido y ToolExecutionException se
+     * convierten en ToolResult, UpstreamSessionExpiredException se propaga), pero no
+     * ejecuta nada: se llama ANTES de crear una pending action. Si es válido, data() trae
+     * los args ya enriquecidos con los defaults calculados por el tool.
+     */
+    public ToolResult validate(String name, Map<String, Object> args, UserContext ctx) {
+        Optional<AiTool> tool = toolRegistry.findByName(name);
+        if (tool.isEmpty()) {
+            return new ToolResult(false, null, "No existe un tool llamado '" + name + "'.");
+        }
+        try {
+            Map<String, Object> validatedArgs = tool.get().validate(args, ctx);
+            return new ToolResult(true, validatedArgs, null);
+        } catch (ToolExecutionException ex) {
+            return new ToolResult(false, null, ex.getMessage());
+        }
+    }
 }

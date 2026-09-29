@@ -75,6 +75,22 @@ public class CrearMascotaTool implements AiTool {
         return description.toString();
     }
 
+    /**
+     * Sin llamadas a pet-service: no hace falta verificar propiedad (el dueño siempre es el
+     * usuario autenticado), solo que los campos obligatorios estén y los opcionales tengan
+     * el formato correcto — para no dejarle al usuario una tarjeta que va a fallar al
+     * confirmar por un birthDate mal formado, por ejemplo.
+     */
+    @Override
+    public Map<String, Object> validate(Map<String, Object> args, UserContext ctx) {
+        ToolArgs.requireString(args, "name");
+        ToolArgs.requireString(args, "species");
+        ToolArgs.localDate(args, "birthDate");
+        ToolArgs.number(args, "height");
+        ToolArgs.number(args, "weight");
+        return args;
+    }
+
     @Override
     public Object execute(Map<String, Object> args, UserContext ctx) {
         String name = ToolArgs.requireString(args, "name");

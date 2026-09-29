@@ -116,4 +116,35 @@ class RegistrarVacunaToolTest {
         verify(petServicePort, never()).getPet(any(), any());
         verify(medicalServicePort, never()).registerVaccine(any(), any());
     }
+
+    @Test
+    void validateVerificaPropiedadSinLlamarAMedicalService() {
+        UUID userId = UUID.randomUUID();
+        UUID petId = UUID.randomUUID();
+        UUID otroUsuario = UUID.randomUUID();
+        UserContext ctx = new UserContext(userId, "Ana", "jwt");
+        when(petServicePort.getPet(petId, "jwt")).thenReturn(Pet.builder().id(petId).ownerId(otroUsuario).build());
+
+        Map<String, Object> args = Map.of(
+                "petId", petId.toString(), "name", "Rabia", "applicationDate", "2026-01-15T00:00:00Z");
+
+        assertThatThrownBy(() -> tool().validate(args, ctx)).isInstanceOf(ToolExecutionException.class);
+        verify(medicalServicePort, never()).registerVaccine(any(), any());
+    }
+
+    @Test
+    void validateConMascotaPropiaDevuelveLosMismosArgs() {
+        UUID userId = UUID.randomUUID();
+        UUID petId = UUID.randomUUID();
+        UserContext ctx = new UserContext(userId, "Ana", "jwt");
+        when(petServicePort.getPet(petId, "jwt")).thenReturn(Pet.builder().id(petId).ownerId(userId).build());
+
+        Map<String, Object> args = Map.of(
+                "petId", petId.toString(), "name", "Rabia", "applicationDate", "2026-01-15T00:00:00Z");
+
+        Map<String, Object> validated = tool().validate(args, ctx);
+
+        assertThat(validated).isEqualTo(args);
+        verify(medicalServicePort, never()).registerVaccine(any(), any());
+    }
 }

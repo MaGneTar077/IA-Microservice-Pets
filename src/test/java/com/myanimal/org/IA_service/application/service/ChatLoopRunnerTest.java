@@ -27,6 +27,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import com.myanimal.org.IA_service.application.dto.ChatResult;
+import com.myanimal.org.IA_service.domain.exception.AiModelUnavailableException;
 import com.myanimal.org.IA_service.domain.exception.UpstreamSessionExpiredException;
 import com.myanimal.org.IA_service.domain.model.AiFunctionCall;
 import com.myanimal.org.IA_service.domain.model.AiMessage;
@@ -200,10 +201,13 @@ class ChatLoopRunnerTest {
                 .modelUsed("gemini-test")
                 .build();
         when(aiModelPort.generate(any())).thenReturn(response);
+        when(toolExecutor.validate(eq("crear_mascota"), eq(Map.of("name", "Luna")), eq(userContext)))
+                .thenReturn(new ToolResult(true, Map.of("name", "Luna"), null));
 
         UUID pendingId = UUID.randomUUID();
         Instant expiresAt = Instant.parse("2026-09-29T20:00:00Z");
-        when(pendingActionRepositoryPort.create(conversationId, userId, "crear_mascota", Map.of("name", "Luna")))
+        Map<String, Object> expectedEnvelope = Map.of("callId", "call_1", "arguments", Map.of("name", "Luna"));
+        when(pendingActionRepositoryPort.create(conversationId, userId, "crear_mascota", expectedEnvelope))
                 .thenReturn(PendingAction.builder().id(pendingId).toolName("crear_mascota").expiresAt(expiresAt).build());
 
         ChatResult result = runner(5).run(userContext, conversationId);
@@ -212,11 +216,133 @@ class ChatLoopRunnerTest {
         assertThat(result.getPendingAction().getId()).isEqualTo(pendingId);
         assertThat(result.getPendingAction().getTool()).isEqualTo("crear_mascota");
         assertThat(result.getPendingAction().getDescripcion()).isEqualTo("Crear mascota Luna");
+        assertThat(result.getPendingAction().getArgs()).isEqualTo(Map.of("name", "Luna"));
         assertThat(result.getPendingAction().getExpiresAt()).isEqualTo(expiresAt);
         assertThat(result.getReply()).isEqualTo("Voy a crear a Luna. ¿Confirmas?");
 
         verify(aiModelPort, times(1)).generate(any());
         verify(toolExecutor, never()).execute(any(), any(), any());
+    }
+
+    @Test
+    void unaValidacionFallidaNoCreaLaPendingActionYElModeloRecibeElError() {
+        UUID conversationId = UUID.randomUUID();
+        UserContext userContext = new UserContext(UUID.randomUUID(), "Ana", "jwt");
+
+        AiTool tool = mock(AiTool.class);
+        when(tool.requiresConfirmation()).thenReturn(true);
+        when(toolRegistry.findByName("agendar_cita")).thenReturn(Optional.of(tool));
+        when(toolRegistry.declarations()).thenReturn(List.of());
+        when(conversationRepositoryPort.findRecentMessages(eq(conversationId), anyInt())).thenReturn(List.of());
+
+        AiFunctionCall call = new AiFunctionCall("call_1", "agendar_cita", Map.of("startDate", "2020-01-01"), null);
+        AiResponse firstResponse = AiResponse.builder().functionCalls(List.of(call)).modelUsed("gemini-test").build();
+        AiResponse secondResponse = AiResponse.builder()
+                .functionCalls(List.of()).text("Esa fecha ya pasó, ¿me das otra?").modelUsed("gemini-test").build();
+        when(aiModelPort.generate(any())).thenReturn(firstResponse, secondResponse);
+        when(toolExecutor.validate(eq("agendar_cita"), any(), eq(userContext)))
+                .thenReturn(new ToolResult(false, null, "Esa fecha ya pasó."));
+
+        ChatResult result = runner(5).run(userContext, conversationId);
+
+        assertThat(result.getPendingAction()).isNull();
+        assertThat(result.getReply()).isEqualTo("Esa fecha ya pasó, ¿me das otra?");
+        verify(pendingActionRepositoryPort, never()).create(any(), any(), any(), any());
+        verify(conversationRepositoryPort).append(eq(conversationId),
+                argThat(m -> m.getRole() == MessageRole.TOOL
+                        && Boolean.FALSE.equals(m.getToolResult().get("ok"))
+                        && "Esa fecha ya pasó.".equals(m.getToolResult().get("error"))));
+        verify(aiModelPort, times(2)).generate(any());
+    }
+
+    @Test
+    void confirmarUnaPendingActionEjecutaElToolPersisteElTurnoYContinuaElLoop() {
+        UUID conversationId = UUID.randomUUID();
+        UserContext userContext = new UserContext(UUID.randomUUID(), "Ana", "jwt");
+
+        Map<String, Object> envelope = Map.of(
+                "callId", "call_9",
+                "thoughtSignature", "sig-9",
+                "arguments", Map.of("name", "Luna", "species", "Perro"));
+        PendingAction pending = PendingAction.builder()
+                .conversationId(conversationId)
+                .toolName("crear_mascota")
+                .toolArgs(envelope)
+                .build();
+
+        when(toolExecutor.execute(eq("crear_mascota"), eq(Map.of("name", "Luna", "species", "Perro")), eq(userContext)))
+                .thenReturn(new ToolResult(true, Map.of("id", UUID.randomUUID()), null));
+        when(conversationRepositoryPort.findRecentMessages(eq(conversationId), anyInt())).thenReturn(List.of());
+        when(toolRegistry.declarations()).thenReturn(List.of());
+        AiResponse finalResponse = AiResponse.builder()
+                .functionCalls(List.of()).text("Listo, Luna quedó registrada.").modelUsed("gemini-test").build();
+        when(aiModelPort.generate(any())).thenReturn(finalResponse);
+
+        ChatResult result = runner(5).confirmPendingAction(userContext, pending);
+
+        assertThat(result.getReply()).isEqualTo("Listo, Luna quedó registrada.");
+        verify(conversationRepositoryPort).append(eq(conversationId),
+                argThat(m -> m.getRole() == MessageRole.TOOL
+                        && m.getToolArgs().get("callId").equals("call_9")
+                        && m.getToolArgs().get("thoughtSignature").equals("sig-9")));
+    }
+
+    @Test
+    void confirmarUnaPendingActionCuandoElToolTuvoExitoYGeminiFallaDevuelveUnReplyDeRespaldo() {
+        UUID conversationId = UUID.randomUUID();
+        UserContext userContext = new UserContext(UUID.randomUUID(), "Ana", "jwt");
+
+        Map<String, Object> arguments = Map.of("name", "Luna", "species", "Perro", "breed", "Labrador");
+        Map<String, Object> envelope = Map.of("callId", "call_9", "arguments", arguments);
+        PendingAction pending = PendingAction.builder()
+                .conversationId(conversationId)
+                .toolName("crear_mascota")
+                .toolArgs(envelope)
+                .build();
+
+        AiTool tool = mock(AiTool.class);
+        when(tool.describe(arguments)).thenReturn("Registrar a Luna (Perro, Labrador)");
+        when(toolRegistry.findByName("crear_mascota")).thenReturn(Optional.of(tool));
+
+        // El tool YA se ejecutó con éxito (la mascota se creó); lo único que falla es la
+        // llamada a Gemini para redactar el texto final.
+        when(toolExecutor.execute(eq("crear_mascota"), eq(arguments), eq(userContext)))
+                .thenReturn(new ToolResult(true, Map.of("id", UUID.randomUUID()), null));
+        when(conversationRepositoryPort.findRecentMessages(eq(conversationId), anyInt())).thenReturn(List.of());
+        when(toolRegistry.declarations()).thenReturn(List.of());
+        when(aiModelPort.generate(any()))
+                .thenThrow(new AiModelUnavailableException("El asistente de IA no está disponible en este momento."));
+
+        ChatResult result = runner(5).confirmPendingAction(userContext, pending);
+
+        assertThat(result.getReply()).isEqualTo("Listo: Registrar a Luna (Perro, Labrador)");
+        assertThat(result.getPendingAction()).isNull();
+        // El turno 'tool' con la escritura ya exitosa quedó persistido antes del fallo de Gemini.
+        verify(conversationRepositoryPort).append(eq(conversationId),
+                argThat(m -> m.getRole() == MessageRole.TOOL && Boolean.TRUE.equals(m.getToolResult().get("ok"))));
+        verify(conversationRepositoryPort).append(eq(conversationId),
+                argThat(m -> m.getRole() == MessageRole.MODEL
+                        && "Listo: Registrar a Luna (Perro, Labrador)".equals(m.getContenido())));
+    }
+
+    @Test
+    void confirmarUnaPendingActionCuyoToolDa401RespondeQueLaSesionExpiro() {
+        UUID conversationId = UUID.randomUUID();
+        UserContext userContext = new UserContext(UUID.randomUUID(), "Ana", "jwt");
+
+        Map<String, Object> envelope = Map.of("callId", "call_9", "arguments", Map.of("name", "Luna"));
+        PendingAction pending = PendingAction.builder()
+                .conversationId(conversationId)
+                .toolName("crear_mascota")
+                .toolArgs(envelope)
+                .build();
+        when(toolExecutor.execute(eq("crear_mascota"), any(), eq(userContext)))
+                .thenThrow(new UpstreamSessionExpiredException("expiró", new RuntimeException("401")));
+
+        ChatResult result = runner(5).confirmPendingAction(userContext, pending);
+
+        assertThat(result.getReply()).contains("sesión expiró");
+        verify(aiModelPort, never()).generate(any());
     }
 
     @Test

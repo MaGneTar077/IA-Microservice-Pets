@@ -18,6 +18,9 @@ import org.springframework.stereotype.Component;
 
 import com.myanimal.org.IA_service.application.dto.ChatResult;
 import com.myanimal.org.IA_service.application.dto.PendingActionDto;
+import com.myanimal.org.IA_service.domain.exception.AiContentBlockedException;
+import com.myanimal.org.IA_service.domain.exception.AiModelException;
+import com.myanimal.org.IA_service.domain.exception.AiModelUnavailableException;
 import com.myanimal.org.IA_service.domain.exception.UpstreamSessionExpiredException;
 import com.myanimal.org.IA_service.domain.model.AiFunctionCall;
 import com.myanimal.org.IA_service.domain.model.AiMessage;
@@ -103,7 +106,23 @@ public class ChatLoopRunner {
                 Optional<AiTool> tool = toolRegistry.findByName(call.name());
                 boolean requiresConfirmation = tool.map(AiTool::requiresConfirmation).orElse(false);
                 if (requiresConfirmation) {
-                    confirmationRequired = call;
+                    ToolResult validation;
+                    try {
+                        validation = toolExecutor.validate(call.name(), call.args(), userContext);
+                    } catch (UpstreamSessionExpiredException ex) {
+                        log.warn("Sesión expirada validando una acción pendiente: {}", ex.getMessage());
+                        return sessionExpiredResult(conversationId);
+                    }
+                    if (!validation.ok()) {
+                        // No se crea la pending action: el modelo lee el error y se lo explica
+                        // al usuario en vez de dejarle una tarjeta que va a fallar al confirmar.
+                        persistToolMessage(conversationId, call, validation);
+                        continue;
+                    }
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> validatedArgs = (Map<String, Object>) validation.data();
+                    confirmationRequired = new AiFunctionCall(call.id(), call.name(), validatedArgs,
+                            call.thoughtSignature());
                     break;
                 }
 
@@ -151,10 +170,71 @@ public class ChatLoopRunner {
                 .build();
     }
 
+    /**
+     * Confirmación de una pending action (parte E): ejecuta el tool con los args que ya se
+     * validaron y enriquecieron al proponer la acción, persiste el turno 'tool' y continúa
+     * el loop para que el modelo redacte la respuesta final. callId/thoughtSignature viajan
+     * dentro del sobre de tool_args (mismo patrón que ya usan los mensajes 'tool') porque la
+     * pending action no tiene columnas propias para ellos.
+     */
+    public ChatResult confirmPendingAction(UserContext userContext, PendingAction pending) {
+        Map<String, Object> envelope = pending.getToolArgs();
+        String callId = (String) envelope.get("callId");
+        String thoughtSignature = (String) envelope.get("thoughtSignature");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> arguments = (Map<String, Object>) envelope.get("arguments");
+
+        ToolResult result;
+        try {
+            result = toolExecutor.execute(pending.getToolName(), arguments, userContext);
+        } catch (UpstreamSessionExpiredException ex) {
+            log.warn("Sesión expirada confirmando una pending action: {}", ex.getMessage());
+            return sessionExpiredResult(pending.getConversationId());
+        }
+
+        AiFunctionCall call = new AiFunctionCall(callId, pending.getToolName(), arguments, thoughtSignature);
+        persistToolMessage(pending.getConversationId(), call, result);
+
+        if (!result.ok()) {
+            return run(userContext, pending.getConversationId());
+        }
+
+        // La escritura ya ocurrió (result.ok()): si Gemini falla redactando la respuesta
+        // final (cuota, contenido bloqueado, etc.) no se le puede devolver un error al
+        // usuario — reintentaría desde el móvil y duplicaría lo que ya se creó. La acción
+        // ya quedó CONFIRMADA y el reply bonito es solo cosmético.
+        try {
+            return run(userContext, pending.getConversationId());
+        } catch (AiModelException | AiModelUnavailableException | AiContentBlockedException ex) {
+            log.warn("La acción '{}' se ejecutó con éxito pero Gemini falló redactando la respuesta: {}",
+                    pending.getToolName(), ex.getMessage());
+            return localConfirmationReply(pending, arguments);
+        }
+    }
+
+    private ChatResult localConfirmationReply(PendingAction pending, Map<String, Object> arguments) {
+        String descripcion = toolRegistry.findByName(pending.getToolName())
+                .map(tool -> tool.describe(arguments))
+                .orElse(pending.getToolName());
+        String reply = "Listo: " + descripcion;
+        persistModelText(pending.getConversationId(), reply);
+        return ChatResult.builder()
+                .conversationId(pending.getConversationId())
+                .reply(reply)
+                .build();
+    }
+
     private ChatResult createPendingActionResult(UUID conversationId, UserContext userContext,
             AiFunctionCall call, AiResponse response) {
+        Map<String, Object> toolArgsEnvelope = new LinkedHashMap<>();
+        toolArgsEnvelope.put("callId", call.id());
+        if (call.thoughtSignature() != null) {
+            toolArgsEnvelope.put("thoughtSignature", call.thoughtSignature());
+        }
+        toolArgsEnvelope.put("arguments", call.args());
+
         PendingAction pending = pendingActionRepositoryPort.create(
-                conversationId, userContext.userId(), call.name(), call.args());
+                conversationId, userContext.userId(), call.name(), toolArgsEnvelope);
 
         String descripcion = toolRegistry.findByName(call.name())
                 .map(tool -> tool.describe(call.args()))

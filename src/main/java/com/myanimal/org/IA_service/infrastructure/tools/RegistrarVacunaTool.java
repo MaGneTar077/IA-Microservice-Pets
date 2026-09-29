@@ -84,14 +84,33 @@ public class RegistrarVacunaTool implements AiTool {
         String notes = ToolArgs.string(args, "notes");
 
         // Nunca se llama a medical-service sin confirmar antes que la mascota es del usuario.
-        Pet pet = petServicePort.getPet(petId, ctx.rawJwt());
-        if (!ctx.userId().equals(pet.getOwnerId())) {
-            throw new ToolExecutionException("Esa mascota no pertenece al usuario autenticado.");
-        }
+        verifyPetOwnership(petId, ctx);
 
         VaccineRecord record = new VaccineRecord(petId, name, lotNumber, applicationDate, nextDoseDate,
                 veterinarian, notes);
         return medicalServicePort.registerVaccine(record, ctx.rawJwt());
+    }
+
+    /**
+     * Misma validación que execute() (campos obligatorios, fechas parseables, propiedad del
+     * petId) pero sin llamar a medical-service — se corre antes de crear la pending action
+     * para no dejarle al usuario una tarjeta que va a fallar al confirmar.
+     */
+    @Override
+    public Map<String, Object> validate(Map<String, Object> args, UserContext ctx) {
+        UUID petId = ToolArgs.uuid(args, "petId");
+        ToolArgs.requireString(args, "name");
+        parseIsoOrDate(ToolArgs.requireString(args, "applicationDate"), "applicationDate");
+        optionalDate(args, "nextDoseDate");
+        verifyPetOwnership(petId, ctx);
+        return args;
+    }
+
+    private void verifyPetOwnership(UUID petId, UserContext ctx) {
+        Pet pet = petServicePort.getPet(petId, ctx.rawJwt());
+        if (!ctx.userId().equals(pet.getOwnerId())) {
+            throw new ToolExecutionException("Esa mascota no pertenece al usuario autenticado.");
+        }
     }
 
     private Instant optionalDate(Map<String, Object> args, String key) {

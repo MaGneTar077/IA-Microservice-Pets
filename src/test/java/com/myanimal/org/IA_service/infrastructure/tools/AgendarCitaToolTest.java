@@ -187,6 +187,63 @@ class AgendarCitaToolTest {
     }
 
     @Test
+    void validateConFechaEnElPasadoLanzaToolExecutionExceptionYNoCreaNada() {
+        UserContext ctx = new UserContext(UUID.randomUUID(), "Ana", "jwt");
+        Map<String, Object> args = baseArgs();
+        args.put("startDate", "2020-01-01T10:00:00-05:00");
+
+        assertThatThrownBy(() -> tool().validate(args, ctx)).isInstanceOf(ToolExecutionException.class);
+        verify(calendarServicePort, never()).createEvent(any(), any());
+    }
+
+    @Test
+    void validateConMascotaAjenaLanzaToolExecutionExceptionYNoCreaNada() {
+        UUID userId = UUID.randomUUID();
+        UUID petId = UUID.randomUUID();
+        UUID otroUsuario = UUID.randomUUID();
+        UserContext ctx = new UserContext(userId, "Ana", "jwt");
+        when(petServicePort.getPet(petId, "jwt")).thenReturn(Pet.builder().id(petId).ownerId(otroUsuario).build());
+        Map<String, Object> args = baseArgs();
+        args.put("startDate", "2026-09-29T10:00:00-05:00");
+        args.put("petId", petId.toString());
+
+        assertThatThrownBy(() -> tool().validate(args, ctx)).isInstanceOf(ToolExecutionException.class);
+        verify(calendarServicePort, never()).createEvent(any(), any());
+    }
+
+    @Test
+    void validateAgregaLosDefaultsCalculadosALosArgsParaLaTarjetaDeConfirmacion() {
+        UserContext ctx = new UserContext(UUID.randomUUID(), "Ana", "jwt");
+        Map<String, Object> args = baseArgs();
+        args.put("startDate", "2026-09-29T10:00:00-05:00");
+
+        Map<String, Object> validated = tool().validate(args, ctx);
+
+        assertThat(validated).containsKeys("endDate", "reminderAt", "eventType");
+        assertThat(validated.get("eventType")).isEqualTo("VET_APPOINTMENT");
+        verify(calendarServicePort, never()).createEvent(any(), any());
+    }
+
+    @Test
+    void losArgsEnriquecidosPorValidateSeReinterpretanCorrectamenteSinDobleDesplazamiento() {
+        UserContext ctx = new UserContext(UUID.randomUUID(), "Ana", "jwt");
+        when(calendarServicePort.createEvent(any(), eq("jwt"))).thenReturn(Map.of());
+        Map<String, Object> args = baseArgs();
+        args.put("startDate", "2026-09-29T10:00:00-05:00");
+
+        Map<String, Object> validated = tool().validate(args, ctx);
+        // Simula lo que pasa al confirmar: execute() vuelve a parsear los args ya
+        // enriquecidos (guardados en la pending action), no los originales del modelo.
+        tool().execute(validated, ctx);
+
+        ArgumentCaptor<CalendarEventRecord> captor = ArgumentCaptor.forClass(CalendarEventRecord.class);
+        verify(calendarServicePort).createEvent(captor.capture(), eq("jwt"));
+        assertThat(captor.getValue().startDate()).isEqualTo(Instant.parse("2026-09-29T15:00:00Z"));
+        assertThat(captor.getValue().endDate()).isEqualTo(Instant.parse("2026-09-29T16:00:00Z"));
+        assertThat(captor.getValue().reminderAt()).isEqualTo(Instant.parse("2026-09-28T15:00:00Z"));
+    }
+
+    @Test
     void elUserIdSiempreVieneDelJwtNuncaDeLosArgs() {
         UUID userId = UUID.randomUUID();
         UUID userIdInventadoPorElModelo = UUID.randomUUID();

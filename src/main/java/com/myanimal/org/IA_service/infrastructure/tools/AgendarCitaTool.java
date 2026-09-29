@@ -9,6 +9,7 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoUnit;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -86,6 +87,39 @@ public class AgendarCitaTool implements AiTool {
 
     @Override
     public Object execute(Map<String, Object> args, UserContext ctx) {
+        PreparedAppointment prepared = prepare(args, ctx);
+        CalendarEventRecord record = new CalendarEventRecord(ctx.userId(), prepared.petId(), prepared.title(),
+                prepared.description(), prepared.eventType(), prepared.startDate(), prepared.endDate(),
+                prepared.location(), prepared.reminderAt(), true);
+        return calendarServicePort.createEvent(record, ctx.rawJwt());
+    }
+
+    /**
+     * Misma validación y normalización que execute() (fecha en el pasado, propiedad del
+     * petId), pero sin llamar a calendar-service. Los defaults calculados (endDate,
+     * reminderAt, y eventType) se escriben de vuelta en los args para que la pending action
+     * los muestre en la tarjeta de confirmación — el usuario no debería confirmar a ciegas
+     * a qué hora termina su cita o cuándo le llega el recordatorio.
+     * <p>
+     * Las fechas se devuelven con el offset explícito de {@code app.timezone} (ej.
+     * "-05:00"), nunca en UTC/"Z": si se guardaran como "Z" y el tool las reinterpretara más
+     * tarde al confirmar, {@link #normalizeToUtc} las trataría como la "Z sospechosa" del
+     * modelo y las desplazaría una segunda vez.
+     */
+    @Override
+    public Map<String, Object> validate(Map<String, Object> args, UserContext ctx) {
+        PreparedAppointment prepared = prepare(args, ctx);
+        ZoneId userZone = ZoneId.of(appProperties.getTimezone());
+
+        Map<String, Object> enriched = new LinkedHashMap<>(args);
+        enriched.put("startDate", toLocalOffsetIso(prepared.startDate(), userZone));
+        enriched.put("endDate", toLocalOffsetIso(prepared.endDate(), userZone));
+        enriched.put("reminderAt", toLocalOffsetIso(prepared.reminderAt(), userZone));
+        enriched.put("eventType", prepared.eventType());
+        return enriched;
+    }
+
+    private PreparedAppointment prepare(Map<String, Object> args, UserContext ctx) {
         String title = ToolArgs.requireString(args, "title");
         String rawStartDate = ToolArgs.requireString(args, "startDate");
         String description = ToolArgs.string(args, "description");
@@ -120,9 +154,16 @@ public class AgendarCitaTool implements AiTool {
             }
         }
 
-        CalendarEventRecord record = new CalendarEventRecord(ctx.userId(), petId, title, description, eventType,
-                startDate, endDate, location, reminderAt, true);
-        return calendarServicePort.createEvent(record, ctx.rawJwt());
+        return new PreparedAppointment(title, description, eventType, location, startDate, endDate, reminderAt,
+                petId);
+    }
+
+    private String toLocalOffsetIso(Instant instant, ZoneId userZone) {
+        return OffsetDateTime.ofInstant(instant, userZone).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+    }
+
+    private record PreparedAppointment(String title, String description, String eventType, String location,
+            Instant startDate, Instant endDate, Instant reminderAt, UUID petId) {
     }
 
     /**

@@ -282,6 +282,70 @@ el modelo alucina un `petId` ajeno, `pet-service` responde 403 y ese 403 vuelve 
     `registrar_vacuna`/`agendar_cita`, la tarjeta describe solo la acción en sí
     (vacuna + fecha; título + fecha) y deja que la app móvil resuelva `petId` → nombre
     con lo que ya tiene, si quiere mostrarlo.
+- **Etapa 3, parte E (checkpoint, confirmación de acciones)**:
+  - **Bug encontrado al probar D2-D4**: una cita con fecha pasada (o una mascota
+    ajena) creaba la pending action igual, porque `execute()` es lo único que
+    validaba y no corre hasta confirmar — el usuario veía la tarjeta, confirmaba, y
+    recién ahí fallaba. Fix: `AiTool` ganó un 5º método, `validate(args, ctx)`
+    (`default` que devuelve los args tal cual — solo lo sobrescriben los 3 tools con
+    confirmación), que corre las mismas validaciones de negocio que `execute()`
+    (campos obligatorios, fecha en el pasado, propiedad del `petId`) pero sin
+    escribir nada. `ChatLoopRunner` lo llama antes de crear la pending action; si
+    falla, no se crea nada y el error vuelve al modelo como `functionResponse` (igual
+    que cualquier otro tool de solo lectura), no se detiene el loop.
+    `ToolExecutor.validate(...)` es el espejo de `execute(...)`: mismo contrato
+    (nombre desconocido y `ToolExecutionException` → `ToolResult`;
+    `UpstreamSessionExpiredException` se propaga sin convertirse). `execute()` sigue
+    validando también — entre proponer y confirmar puede pasar hasta una hora.
+  - **Los defaults calculados viajan en los args de la pending action.**
+    `AgendarCitaTool` se partió en `prepare()` (parseo + normalización + validación,
+    compartido por `execute()` y `validate()`) y `validate()` devuelve los args
+    originales con `endDate`/`reminderAt`/`eventType` agregados, para que la tarjeta
+    de confirmación muestre a qué hora termina la cita y cuándo llega el
+    recordatorio, no solo lo que escribió el usuario. Esas fechas se serializan con
+    el offset explícito de `app.timezone` (ej. `-05:00`), nunca en UTC/"Z": si se
+    guardaran como "Z", `normalizeToUtc` las volvería a tratar como la "Z
+    sospechosa" del modelo al confirmar y las desplazaría una segunda vez. Bogotá no
+    tiene horario de verano, así que ese offset es siempre correcto de vuelta.
+  - **La pending action no tiene columnas propias para `callId`/`thoughtSignature`.**
+    En vez de migrar el esquema, `tool_args` guarda el mismo sobre que ya usan los
+    mensajes `rol='tool'` desde la parte A-D1: `{callId, thoughtSignature,
+    arguments}`. `PendingActionDto.args` (lo que ve el móvil) es solo `arguments`,
+    desenvuelto; el sobre completo es lo que se persiste y lo que
+    `ChatLoopRunner.confirmPendingAction` desenvuelve para reconstruir el
+    `AiFunctionCall` original y reenviar el `thoughtSignature` tal cual al confirmar,
+    sea cual sea el tiempo que pasó desde que se propuso.
+  - `ChatLoopRunner` ganó `confirmPendingAction(ctx, pending)`: ejecuta el tool,
+    persiste el turno `tool` (éxito o error — si la mascota dejó de ser del usuario
+    en la última hora, por ejemplo) y sigue el loop normal (`run(...)`) para que el
+    modelo redacte la respuesta final. Un 401 ahí se trata igual que en el resto del
+    loop: `sessionExpiredResult(...)`, sin seguir.
+  - `PendingActionService` (nuevo, implementa `PendingActionUseCase`) es dueño de
+    las transiciones de estado — `ChatLoopRunner` no decide `PENDIENTE`/`CONFIRMADA`/
+    `EXPIRADA`. `findByIdAndUser(id, userId)` vacío, o `estado != PENDIENTE`
+    (confirmada, rechazada o ya expirada antes), son el mismo 404
+    (`PendingActionNotFoundException`) — nunca un 403, mismo principio que
+    `ConversationNotFoundException`. Solo si está `PENDIENTE` pero
+    `expiresAt` ya pasó se marca `EXPIRADA` ahí mismo y se lanza
+    `PendingActionExpiredException` → 410.
+  - Rechazar marca `RECHAZADA`, persiste un mensaje `rol='model'` con un texto fijo
+    (no hay `rol='system'` en el check de `ai_message`) y devuelve ese texto sin
+    tocar `ChatLoopRunner` ni Gemini.
+  - **Bug encontrado al probar confirm/reject en caliente**: `confirmPendingAction`
+    marcaba la acción `CONFIRMADA` y ejecutaba el tool con éxito (la mascota SÍ se
+    creaba), pero si Gemini fallaba justo después redactando el texto final (429 por
+    cuota, contenido bloqueado, lo que sea) esa excepción se propagaba igual hasta el
+    controller y el usuario recibía un error — con la mascota ya creada. Reintentar
+    desde el móvil pensando que falló duplicaba la escritura. Fix: si
+    `toolExecutor.execute(...)` devolvió `ok()`, la llamada subsiguiente a
+    `run(...)` (la que redacta el texto final) queda envuelta en un
+    `catch (AiModelException | AiModelUnavailableException | AiContentBlockedException)`
+    que arma un reply local a partir de `tool.describe(args)` (`"Listo: " +
+    descripcion`) en vez de propagar. La acción ya quedó `CONFIRMADA` desde antes de
+    ejecutar el tool (en `PendingActionService`, no aquí) — este catch no cambia esa
+    transición, solo evita que un fallo cosmético del texto final se disfrace de
+    fallo de la acción completa. Si el tool falló (`!result.ok()`), el error sí se
+    deja fluir normal por `run(...)` para que el modelo se lo explique al usuario.
 
 ## Estado actual
 
@@ -290,9 +354,9 @@ el modelo alucina un `petId` ajeno, `pet-service` responde 403 y ese 403 vuelve 
       endpoint de texto plano.
 - [x] **Etapa 2** — JWT, conversaciones persistentes, adjuntos multimodales
       (`inline_data` imagen/audio) y endpoints de lectura → F1, F2.
-- [ ] Etapa 3 — `AiTool`, registry, executor, loop con guard de 5 iteraciones → F3, F4.
-      Partes A-D listas (los 4 tools, incluidos los que escriben con confirmación);
-      falta la parte E (`POST /api/ai/actions/{id}/confirm|reject`) ← siguiente
+- [x] **Etapa 3** — `AiTool`, registry, executor, loop con guard de 5 iteraciones,
+      los 4 tools (incluidos los que escriben con confirmación) y
+      `POST /api/ai/actions/{id}/confirm|reject` → F3, F4.
 - [ ] Etapa 4 — structured output para documentos → F5
 - [ ] Etapa 5 — suscripciones push y sugerencias de cuidado → F6
 - [ ] Etapa 6 — integración con MyAnimaLogVet

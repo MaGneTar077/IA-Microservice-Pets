@@ -14,6 +14,8 @@ import com.myanimal.org.IA_service.domain.exception.AttachmentStorageException;
 import com.myanimal.org.IA_service.domain.exception.AttachmentsTooLargeException;
 import com.myanimal.org.IA_service.domain.exception.ConversationNotFoundException;
 import com.myanimal.org.IA_service.domain.exception.InvalidChatRequestException;
+import com.myanimal.org.IA_service.domain.exception.PendingActionExpiredException;
+import com.myanimal.org.IA_service.domain.exception.PendingActionNotFoundException;
 import com.myanimal.org.IA_service.domain.exception.TooManyAttachmentsException;
 import com.myanimal.org.IA_service.domain.exception.UnsupportedAttachmentTypeException;
 import com.myanimal.org.IA_service.infrastructure.adapters.in.dto.ErrorResponse;
@@ -72,6 +74,18 @@ public class ApiExceptionHandler {
         return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
                 .body(new ErrorResponse("ATTACHMENT_STORAGE_ERROR",
                         "Ocurrió un error al procesar tus archivos adjuntos. Intenta de nuevo."));
+    }
+
+    @ExceptionHandler(PendingActionNotFoundException.class)
+    public ResponseEntity<ErrorResponse> handlePendingActionNotFound(PendingActionNotFoundException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(new ErrorResponse("PENDING_ACTION_NOT_FOUND", "La acción no existe."));
+    }
+
+    @ExceptionHandler(PendingActionExpiredException.class)
+    public ResponseEntity<ErrorResponse> handlePendingActionExpired(PendingActionExpiredException ex) {
+        return ResponseEntity.status(HttpStatus.GONE)
+                .body(new ErrorResponse("PENDING_ACTION_EXPIRED", "La acción ya expiró."));
     }
 
     @ExceptionHandler(InvalidChatRequestException.class)

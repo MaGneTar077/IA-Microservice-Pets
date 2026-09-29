@@ -1,8 +1,10 @@
 package com.myanimal.org.IA_service.infrastructure.tools;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -16,6 +18,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import com.myanimal.org.IA_service.domain.exception.ToolExecutionException;
 import com.myanimal.org.IA_service.domain.model.Pet;
 import com.myanimal.org.IA_service.domain.model.UserContext;
 import com.myanimal.org.IA_service.domain.ports.out.PetServicePort;
@@ -101,5 +104,23 @@ class CrearMascotaToolTest {
         String description = tool().describe(Map.of("name", "Luna", "species", "Perro", "breed", "Labrador"));
 
         assertThat(description).isEqualTo("Registrar a Luna (Perro, Labrador)");
+    }
+
+    @Test
+    void validateConCamposObligatoriosPresentesNoLanzaYNoLlamaAPetService() {
+        Map<String, Object> args = Map.of("name", "Luna", "species", "Perro");
+
+        Map<String, Object> validated = tool().validate(args, new UserContext(UUID.randomUUID(), "Ana", "jwt"));
+
+        assertThat(validated).isEqualTo(args);
+        verify(petServicePort, never()).createPet(any(), any());
+    }
+
+    @Test
+    void validateSinNombreLanzaToolExecutionException() {
+        Map<String, Object> args = Map.of("species", "Perro");
+
+        assertThatThrownBy(() -> tool().validate(args, new UserContext(UUID.randomUUID(), "Ana", "jwt")))
+                .isInstanceOf(ToolExecutionException.class);
     }
 }
