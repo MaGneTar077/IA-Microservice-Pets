@@ -248,6 +248,40 @@ el modelo alucina un `petId` ajeno, `pet-service` responde 403 y ese 403 vuelve 
   - Pendiente explícitamente para la próxima parada: D2-D4 (`crear_mascota`,
     `registrar_vacuna`, `agendar_cita` — los tools que escriben) y la Parte E completa
     (`POST /api/ai/actions/{id}/confirm|reject`).
+- **Etapa 3, parte D2-D4 (checkpoint, tools que escriben con confirmación)**:
+  - `PetServicePort` ganó `getPet(petId, rawJwt)` (verificación de propiedad) y
+    `createPet(pet, rawJwt)`. `MedicalServicePort`/`CalendarServicePort` +
+    `MedicalServiceAdapter`/`CalendarServiceAdapter` nuevos, mismo patrón que
+    `PetServiceAdapter`: 401 → `UpstreamSessionExpiredException`; otro 4xx/5xx con
+    cuerpo → `ToolExecutionException`; sin respuesta → se propaga tal cual. Sus
+    respuestas se deserializan como `Map<String, Object>` genérico (el brief no da el
+    contrato de respuesta de esos dos servicios, solo el de la petición).
+  - `ToolArgs` (package-private, `infrastructure.tools`): helper compartido por los 3
+    tools que escriben para leer/validar args crudos del modelo (`requireString`,
+    `number`, `uuid`, `localDate`) — evita repetir el mismo parseo defensivo 3 veces.
+  - **Verificación de propiedad de `petId`** (`registrar_vacuna`, y `agendar_cita`
+    cuando trae `petId`): `getPet(petId, jwt)` y comparar `ownerId` contra
+    `ctx.userId()`. Un 404 de pet-service (petId inventado) y un ownerId distinto
+    (petId real pero de otro usuario) dan el mismo resultado — `ToolExecutionException`,
+    nunca se llama a medical/calendar-service. **Importante para quien construya la
+    parte E**: esta verificación vive en `execute()`, que el loop NO ejecuta hasta que
+    la acción se confirma — al crear la pending action todavía no se verificó nada;
+    la verificación real ocurre recién al confirmar.
+  - **Normalización de fechas de `agendar_cita`** (`AgendarCitaTool.normalizeToUtc`):
+    con offset explícito distinto de `Z` (ej. `-05:00`), se respeta tal cual. Sin
+    offset, o con `Z` puesta ahí — la "Z sospechosa" del brief, el patrón real de
+    Gemini es tacharla sin pensar en la zona del usuario —, se reinterpretan esos
+    mismos números de reloj como hora local (`app.timezone`, `America/Bogota`) y se
+    convierten a UTC de verdad. `endDate` ausente → `startDate` + 1h; `reminderAt`
+    ausente → `startDate` − 1 día con `reminderEnabled: true`; fecha de inicio en el
+    pasado → `ToolExecutionException` antes de intentar nada.
+  - **`describe()` de estos 3 tools nunca menciona la mascota por nombre ni por
+    UUID** — no se extendió la firma para recibir `UserContext`/hacer un lookup contra
+    pet-service solo para mostrar un nombre bonito (eso hubiese significado una
+    llamada HTTP dentro de `describe()`, sin JWT disponible en la firma actual). Para
+    `registrar_vacuna`/`agendar_cita`, la tarjeta describe solo la acción en sí
+    (vacuna + fecha; título + fecha) y deja que la app móvil resuelva `petId` → nombre
+    con lo que ya tiene, si quiere mostrarlo.
 
 ## Estado actual
 
@@ -257,8 +291,8 @@ el modelo alucina un `petId` ajeno, `pet-service` responde 403 y ese 403 vuelve 
 - [x] **Etapa 2** — JWT, conversaciones persistentes, adjuntos multimodales
       (`inline_data` imagen/audio) y endpoints de lectura → F1, F2.
 - [ ] Etapa 3 — `AiTool`, registry, executor, loop con guard de 5 iteraciones → F3, F4.
-      Partes A-D1 listas (`listar_mascotas` de punta a punta); faltan D2-D4 (tools que
-      escriben) y la parte E (confirmar/rechazar) ← siguiente
+      Partes A-D listas (los 4 tools, incluidos los que escriben con confirmación);
+      falta la parte E (`POST /api/ai/actions/{id}/confirm|reject`) ← siguiente
 - [ ] Etapa 4 — structured output para documentos → F5
 - [ ] Etapa 5 — suscripciones push y sugerencias de cuidado → F6
 - [ ] Etapa 6 — integración con MyAnimaLogVet

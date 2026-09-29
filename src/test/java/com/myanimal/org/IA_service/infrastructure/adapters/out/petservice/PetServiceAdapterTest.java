@@ -113,4 +113,67 @@ class PetServiceAdapterTest {
                 .isNotInstanceOf(ToolExecutionException.class)
                 .isNotInstanceOf(UpstreamSessionExpiredException.class);
     }
+
+    @Test
+    void getPetDevuelveLaMascota() {
+        String petJson = """
+                {
+                  "id": "3b7f6e2a-1111-4a2b-9c3d-000000000001",
+                  "ownerId": "3b7f6e2a-1111-4a2b-9c3d-000000000099",
+                  "name": "Luna",
+                  "species": "Perro"
+                }
+                """;
+        Queue<Object> responses = new ConcurrentLinkedQueue<>(List.of(ok(petJson)));
+        PetServiceAdapter adapter = buildAdapter(responses);
+
+        Pet pet = adapter.getPet(UUID.randomUUID(), "jwt");
+
+        assertThat(pet.getName()).isEqualTo("Luna");
+    }
+
+    @Test
+    void getPetConUn404LanzaToolExecutionException() {
+        Queue<Object> responses = new ConcurrentLinkedQueue<>(List.of(status(HttpStatus.NOT_FOUND)));
+        PetServiceAdapter adapter = buildAdapter(responses);
+
+        assertThatThrownBy(() -> adapter.getPet(UUID.randomUUID(), "jwt"))
+                .isInstanceOf(ToolExecutionException.class);
+    }
+
+    @Test
+    void getPetConUn401LanzaUpstreamSessionExpiredException() {
+        Queue<Object> responses = new ConcurrentLinkedQueue<>(List.of(status(HttpStatus.UNAUTHORIZED)));
+        PetServiceAdapter adapter = buildAdapter(responses);
+
+        assertThatThrownBy(() -> adapter.getPet(UUID.randomUUID(), "jwt"))
+                .isInstanceOf(UpstreamSessionExpiredException.class);
+    }
+
+    @Test
+    void createPetDevuelveLaMascotaCreada() {
+        String responseJson = """
+                {
+                  "id": "3b7f6e2a-1111-4a2b-9c3d-000000000001",
+                  "ownerId": "3b7f6e2a-1111-4a2b-9c3d-000000000099",
+                  "name": "Luna",
+                  "species": "Perro"
+                }
+                """;
+        Queue<Object> responses = new ConcurrentLinkedQueue<>(List.of(ok(responseJson)));
+        PetServiceAdapter adapter = buildAdapter(responses);
+
+        Pet created = adapter.createPet(Pet.builder().name("Luna").species("Perro").build(), "jwt");
+
+        assertThat(created.getName()).isEqualTo("Luna");
+    }
+
+    @Test
+    void createPetConUnErrorDeValidacionLanzaToolExecutionException() {
+        Queue<Object> responses = new ConcurrentLinkedQueue<>(List.of(status(HttpStatus.BAD_REQUEST)));
+        PetServiceAdapter adapter = buildAdapter(responses);
+
+        assertThatThrownBy(() -> adapter.createPet(Pet.builder().name("Luna").build(), "jwt"))
+                .isInstanceOf(ToolExecutionException.class);
+    }
 }
