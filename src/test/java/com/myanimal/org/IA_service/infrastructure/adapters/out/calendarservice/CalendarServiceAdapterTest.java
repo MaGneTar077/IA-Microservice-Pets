@@ -9,12 +9,15 @@ import java.util.List;
 import java.util.Queue;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
+import org.springframework.mock.http.client.reactive.MockClientHttpRequest;
 import org.springframework.web.reactive.function.client.ClientResponse;
+import org.springframework.web.reactive.function.client.ExchangeStrategies;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientRequestException;
 
@@ -66,6 +69,33 @@ class CalendarServiceAdapterTest {
         var result = adapter.createEvent(sampleRecord(), "jwt");
 
         assertThat(result).containsEntry("id", "evt-1");
+    }
+
+    @Test
+    void serializaLasFechasComoIsoUtcConZYMilisegundosNuncaConOffset() {
+        AtomicReference<String> capturedBody = new AtomicReference<>();
+        Queue<Object> responses = new ConcurrentLinkedQueue<>(List.of(ok("{\"id\":\"evt-1\"}")));
+        WebClient webClient = WebClient.builder()
+                .baseUrl("http://calendar-service.test")
+                .exchangeFunction(request -> {
+                    MockClientHttpRequest httpRequest = new MockClientHttpRequest(request.method(), request.url());
+                    request.writeTo(httpRequest, ExchangeStrategies.withDefaults()).block();
+                    capturedBody.set(httpRequest.getBodyAsString().block());
+                    return Mono.just((ClientResponse) responses.poll());
+                })
+                .build();
+        CalendarServiceAdapter adapter = new CalendarServiceAdapter(webClient);
+
+        // sampleRecord(): startDate 2026-09-29T15:00:00Z (equivale a las 10:00 en Bogotá,
+        // -05:00), endDate +1h, reminderAt -1 día — calendar-service acepta el primer
+        // formato y responde 500 con el segundo aunque ambos representen el mismo instante.
+        adapter.createEvent(sampleRecord(), "jwt");
+
+        String body = capturedBody.get();
+        assertThat(body).contains("\"startDate\":\"2026-09-29T15:00:00.000Z\"");
+        assertThat(body).contains("\"endDate\":\"2026-09-29T16:00:00.000Z\"");
+        assertThat(body).contains("\"reminderAt\":\"2026-09-28T15:00:00.000Z\"");
+        assertThat(body).doesNotContain("-05:00").doesNotContain("+00:00");
     }
 
     @Test

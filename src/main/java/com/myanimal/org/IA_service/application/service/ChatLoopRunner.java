@@ -195,20 +195,19 @@ public class ChatLoopRunner {
         AiFunctionCall call = new AiFunctionCall(callId, pending.getToolName(), arguments, thoughtSignature);
         persistToolMessage(pending.getConversationId(), call, result);
 
-        if (!result.ok()) {
-            return run(userContext, pending.getConversationId());
-        }
-
-        // La escritura ya ocurrió (result.ok()): si Gemini falla redactando la respuesta
-        // final (cuota, contenido bloqueado, etc.) no se le puede devolver un error al
-        // usuario — reintentaría desde el móvil y duplicaría lo que ya se creó. La acción
-        // ya quedó CONFIRMADA y el reply bonito es solo cosmético.
+        // La pending action ya se consumió (ejecutó o falló) antes de esta llamada: si
+        // Gemini falla redactando la respuesta final (cuota, contenido bloqueado, sin
+        // respuesta, etc.) NUNCA se propaga como error HTTP. Si la escritura tuvo éxito,
+        // reintentar desde el móvil pensando que falló duplicaría lo que ya se creó; si
+        // falló, no hay modelo disponible para explicárselo al usuario, así que se arma un
+        // mensaje local con el error del tool en vez de dejar que la excepción llegue cruda
+        // al controller.
         try {
             return run(userContext, pending.getConversationId());
         } catch (AiModelException | AiModelUnavailableException | AiContentBlockedException ex) {
-            log.warn("La acción '{}' se ejecutó con éxito pero Gemini falló redactando la respuesta: {}",
-                    pending.getToolName(), ex.getMessage());
-            return localConfirmationReply(pending, arguments);
+            log.warn("La acción '{}' terminó (ok={}) pero Gemini falló redactando la respuesta: {}",
+                    pending.getToolName(), result.ok(), ex.getMessage());
+            return result.ok() ? localConfirmationReply(pending, arguments) : localFailureReply(pending, result);
         }
     }
 
@@ -217,6 +216,15 @@ public class ChatLoopRunner {
                 .map(tool -> tool.describe(arguments))
                 .orElse(pending.getToolName());
         String reply = "Listo: " + descripcion;
+        persistModelText(pending.getConversationId(), reply);
+        return ChatResult.builder()
+                .conversationId(pending.getConversationId())
+                .reply(reply)
+                .build();
+    }
+
+    private ChatResult localFailureReply(PendingAction pending, ToolResult result) {
+        String reply = "No pude completar esta acción: " + result.errorMessage() + " Intenta de nuevo más tarde.";
         persistModelText(pending.getConversationId(), reply);
         return ChatResult.builder()
                 .conversationId(pending.getConversationId())

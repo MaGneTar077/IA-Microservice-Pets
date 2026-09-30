@@ -60,10 +60,12 @@ public class PetServiceAdapter implements PetServicePort {
                 throw new UpstreamSessionExpiredException("La sesión expiró al llamar a pet-service.", ex);
             }
             if (ex.getStatusCode().value() == 404) {
-                log.warn("pet-service respondió 404 al consultar la mascota {}", petId);
+                log.warn("pet-service respondió 404 al consultar la mascota {}: {}",
+                        petId, ex.getResponseBodyAsString());
                 throw new ToolExecutionException("No se encontró la mascota.");
             }
-            log.warn("pet-service respondió {} al consultar una mascota", ex.getStatusCode().value());
+            log.warn("pet-service respondió {} al consultar una mascota: {}",
+                    ex.getStatusCode().value(), ex.getResponseBodyAsString());
             throw new ToolExecutionException("No se pudo verificar la mascota.");
         }
     }
@@ -99,7 +101,7 @@ public class PetServiceAdapter implements PetServicePort {
         if (ex.getStatusCode().value() == 401) {
             throw new UpstreamSessionExpiredException("La sesión expiró al llamar a pet-service.", ex);
         }
-        log.warn("pet-service respondió {} {}", ex.getStatusCode().value(), action);
+        log.warn("pet-service respondió {} {}: {}", ex.getStatusCode().value(), action, ex.getResponseBodyAsString());
         throw new ToolExecutionException(businessMessage);
     }
 

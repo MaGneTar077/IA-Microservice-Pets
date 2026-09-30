@@ -282,6 +282,50 @@ el modelo alucina un `petId` ajeno, `pet-service` responde 403 y ese 403 vuelve 
     `registrar_vacuna`/`agendar_cita`, la tarjeta describe solo la acción en sí
     (vacuna + fecha; título + fecha) y deja que la app móvil resuelva `petId` → nombre
     con lo que ya tiene, si quiere mostrarlo.
+  - **calendar-service rechaza offset explícito, solo acepta "Z" con milisegundos**:
+    verificado con POST directo — `"...T10:00:00-05:00"` (ISO-8601 válido) → 500;
+    `"...T15:00:00.000Z"` (mismo instante) → 201. `CalendarEventRequest.startDate/
+    endDate/reminderAt` pasaron de `Instant` a `String`; `CalendarServiceAdapter`
+    las formatea a mano con `DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
+    .withZone(ZoneOffset.UTC)` antes de armar el DTO, en vez de confiar en la
+    serialización por defecto de Jackson para `Instant`. La normalización a hora
+    local `America/Bogota` sigue intacta en `AgendarCitaTool` — este cambio es solo
+    de formato de salida, no de zona horaria. Los args de la `pendingAction` (lo que
+    ve el usuario en la tarjeta) siguen guardando el offset `-05:00` vía
+    `AgendarCitaTool.validate()`; la conversión a "Z" ocurre únicamente dentro del
+    adapter, justo antes del POST.
+  - **Los 3 adapters de servicios destino (`PetServiceAdapter`,
+    `MedicalServiceAdapter`, `CalendarServiceAdapter`) ahora loguean
+    `ex.getResponseBodyAsString()` junto al código de estado.** Antes solo se
+    logueaba "respondió 500" sin más contexto — diagnosticar el bug de arriba costó
+    una llamada directa a calendar-service porque el log no decía qué venía mal en
+    el cuerpo. No aplica a `SupabaseStorageAdapter`: ahí el cuerpo puede reflejar la
+    key del objeto y se sigue logueando solo el código, a propósito (ver Seguridad).
+  - **`registrar_vacuna` — `userId` no estaba en el contrato del brief pero
+    medical-service lo exige** (`{"error": "userId es requerido para
+    notificaciones"}`, encontrado en producción). Mismo patrón que `ownerId` en
+    `crear_mascota` y `userId` en `agendar_cita`: `VaccineRecord` ganó un campo
+    `userId` que `RegistrarVacunaTool.execute()` llena con `ctx.userId()` — nunca de
+    `args`, y no se declara en `declaration()`. `VaccineRequest`/
+    `MedicalServiceAdapter` lo propagan igual que `petId`/`name`.
+  - **`IsoUtcDateFormatter`** (`infrastructure.adapters.out`, nuevo): extrae el
+    formateador `"yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"` que ya usaba `CalendarServiceAdapter`
+    a un lugar compartido, porque `MedicalServiceAdapter` lo necesita también.
+    `VaccineRequest.applicationDate/nextDoseDate` pasaron de `Instant` a `String` por
+    la misma razón que `CalendarEventRequest`: medical-service es del mismo
+    compañero que calendar-service, así que se asume el mismo rechazo de offsets
+    explícitos aunque no esté confirmado con un POST directo (a diferencia de
+    calendar-service, que sí se verificó).
+  - **`RegistrarVacunaTool.parseIsoOrDate` no aceptaba offset explícito** — el
+    modelo mandó `applicationDate` como `"2026-01-15T00:00:00-05:00"` en producción y
+    la validación lanzaba `ToolExecutionException` porque `Instant.parse(...)` solo
+    acepta literal `"Z"`, no un offset arbitrario. Cambiado a
+    `OffsetDateTime.parse(value).toInstant()` como primer intento (acepta cualquier
+    offset, incluida "Z"), con el mismo fallback a `LocalDate` para fechas de
+    calendario sin hora. A diferencia de `agendar_cita`, acá no hay "Z sospechosa"
+    que reinterpretar como hora local: la fecha de aplicación de una vacuna no es
+    sensible a la zona horaria del usuario, así que cualquier offset explícito se
+    respeta tal cual.
 - **Etapa 3, parte E (checkpoint, confirmación de acciones)**:
   - **Bug encontrado al probar D2-D4**: una cita con fecha pasada (o una mascota
     ajena) creaba la pending action igual, porque `execute()` es lo único que
@@ -336,16 +380,27 @@ el modelo alucina un `petId` ajeno, `pet-service` responde 403 y ese 403 vuelve 
     creaba), pero si Gemini fallaba justo después redactando el texto final (429 por
     cuota, contenido bloqueado, lo que sea) esa excepción se propagaba igual hasta el
     controller y el usuario recibía un error — con la mascota ya creada. Reintentar
-    desde el móvil pensando que falló duplicaba la escritura. Fix: si
-    `toolExecutor.execute(...)` devolvió `ok()`, la llamada subsiguiente a
-    `run(...)` (la que redacta el texto final) queda envuelta en un
-    `catch (AiModelException | AiModelUnavailableException | AiContentBlockedException)`
-    que arma un reply local a partir de `tool.describe(args)` (`"Listo: " +
-    descripcion`) en vez de propagar. La acción ya quedó `CONFIRMADA` desde antes de
-    ejecutar el tool (en `PendingActionService`, no aquí) — este catch no cambia esa
-    transición, solo evita que un fallo cosmético del texto final se disfrace de
-    fallo de la acción completa. Si el tool falló (`!result.ok()`), el error sí se
-    deja fluir normal por `run(...)` para que el modelo se lo explique al usuario.
+    desde el móvil pensando que falló duplicaba la escritura.
+  - **Primer intento de fix, incompleto**: envolver en el catch solo la rama
+    `result.ok() == true` y dejar que el error del tool (`!result.ok()`) siguiera
+    fluyendo "para que el modelo lo explique" — pero si Gemini también está caído no
+    hay quién lo explique, y esa excepción seguía saliendo como 500 al cliente. Se
+    detectó al probar el caso real (tool falla + Gemini caído), no en tests: los
+    tests solo cubrían tool-ok+Gemini-falla.
+  - **Fix real**: un único `try { return run(...); } catch (AiModelException |
+    AiModelUnavailableException | AiContentBlockedException ex)` envuelve *ambos*
+    desenlaces del tool. Si `result.ok()`, arma `"Listo: " + tool.describe(args)`
+    (`localConfirmationReply`); si no, arma `"No pude completar esta acción: " +
+    result.errorMessage()` (`localFailureReply`) — en ningún caso se propaga una
+    falla de Gemini como error HTTP después de haber consumido la pending action,
+    haya escrito algo o no.
+  - **Pregunta abierta, sin resolver todavía**: `PendingActionService` marca
+    `CONFIRMADA` *antes* de ejecutar el tool (orden que ya pedía el brief de la
+    parte E: "Marcar CONFIRMADA, ejecutar el tool..."). Si el tool falla, la acción
+    queda `CONFIRMADA` sin haber escrito nada y no se puede volver a confirmar la
+    misma pending action — el usuario tiene que volver a pedírselo al asistente
+    desde cero. Detectado al revisar el fix de arriba; falta decidir si se mantiene
+    (ver conversación) o se cambia el orden/estados.
 
 ## Estado actual
 

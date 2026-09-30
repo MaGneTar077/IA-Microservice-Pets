@@ -9,12 +9,15 @@ import java.util.List;
 import java.util.Queue;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
+import org.springframework.mock.http.client.reactive.MockClientHttpRequest;
 import org.springframework.web.reactive.function.client.ClientResponse;
+import org.springframework.web.reactive.function.client.ExchangeStrategies;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientRequestException;
 
@@ -53,8 +56,8 @@ class MedicalServiceAdapterTest {
     }
 
     private VaccineRecord sampleRecord() {
-        return new VaccineRecord(UUID.randomUUID(), "Rabia", "LOT-1", Instant.parse("2026-01-15T00:00:00Z"),
-                null, "Dr. Pérez", null);
+        return new VaccineRecord(UUID.randomUUID(), UUID.randomUUID(), "Rabia", "LOT-1",
+                Instant.parse("2026-01-15T00:00:00Z"), null, "Dr. Pérez", null);
     }
 
     @Test
@@ -65,6 +68,36 @@ class MedicalServiceAdapterTest {
         var result = adapter.registerVaccine(sampleRecord(), "jwt");
 
         assertThat(result).containsEntry("id", "abc");
+    }
+
+    @Test
+    void elPayloadIncluyeUserIdYSerializaLasFechasComoIsoUtcConZYMilisegundosNuncaConOffset() {
+        AtomicReference<String> capturedBody = new AtomicReference<>();
+        Queue<Object> responses = new ConcurrentLinkedQueue<>(List.of(ok("{\"id\":\"abc\"}")));
+        WebClient webClient = WebClient.builder()
+                .baseUrl("http://medical-service.test")
+                .exchangeFunction(request -> {
+                    MockClientHttpRequest httpRequest = new MockClientHttpRequest(request.method(), request.url());
+                    request.writeTo(httpRequest, ExchangeStrategies.withDefaults()).block();
+                    capturedBody.set(httpRequest.getBodyAsString().block());
+                    return Mono.just((ClientResponse) responses.poll());
+                })
+                .build();
+        MedicalServiceAdapter adapter = new MedicalServiceAdapter(webClient);
+        UUID userId = UUID.randomUUID();
+        VaccineRecord record = new VaccineRecord(userId, UUID.randomUUID(), "Rabia", "LOT-1",
+                Instant.parse("2026-01-15T00:00:00Z"), Instant.parse("2027-01-15T00:00:00Z"), "Dr. Pérez", null);
+
+        // medical-service es del mismo compañero que calendar-service: mismo formato de
+        // fecha esperado (ver CalendarServiceAdapterTest), y exige userId para notificaciones
+        // aunque no estuviera en el contrato original del brief.
+        adapter.registerVaccine(record, "jwt");
+
+        String body = capturedBody.get();
+        assertThat(body).contains("\"userId\":\"" + userId + "\"");
+        assertThat(body).contains("\"applicationDate\":\"2026-01-15T00:00:00.000Z\"");
+        assertThat(body).contains("\"nextDoseDate\":\"2027-01-15T00:00:00.000Z\"");
+        assertThat(body).doesNotContain("-05:00").doesNotContain("+00:00");
     }
 
     @Test

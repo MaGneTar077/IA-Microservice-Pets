@@ -13,6 +13,7 @@ import com.myanimal.org.IA_service.domain.exception.ToolExecutionException;
 import com.myanimal.org.IA_service.domain.exception.UpstreamSessionExpiredException;
 import com.myanimal.org.IA_service.domain.model.VaccineRecord;
 import com.myanimal.org.IA_service.domain.ports.out.MedicalServicePort;
+import com.myanimal.org.IA_service.infrastructure.adapters.out.IsoUtcDateFormatter;
 import com.myanimal.org.IA_service.infrastructure.adapters.out.medicalservice.dto.VaccineRequest;
 
 import lombok.extern.slf4j.Slf4j;
@@ -30,11 +31,12 @@ public class MedicalServiceAdapter implements MedicalServicePort {
     @Override
     public Map<String, Object> registerVaccine(VaccineRecord record, String rawJwt) {
         VaccineRequest request = VaccineRequest.builder()
+                .userId(record.userId())
                 .petId(record.petId())
                 .name(record.name())
                 .lotNumber(record.lotNumber())
-                .applicationDate(record.applicationDate())
-                .nextDoseDate(record.nextDoseDate())
+                .applicationDate(IsoUtcDateFormatter.format(record.applicationDate()))
+                .nextDoseDate(IsoUtcDateFormatter.format(record.nextDoseDate()))
                 .veterinarian(record.veterinarian())
                 .notes(record.notes())
                 .build();
@@ -51,7 +53,8 @@ public class MedicalServiceAdapter implements MedicalServicePort {
             if (ex.getStatusCode().value() == 401) {
                 throw new UpstreamSessionExpiredException("La sesión expiró al llamar a medical-service.", ex);
             }
-            log.warn("medical-service respondió {} al registrar una vacuna", ex.getStatusCode().value());
+            log.warn("medical-service respondió {} al registrar una vacuna: {}",
+                    ex.getStatusCode().value(), ex.getResponseBodyAsString());
             throw new ToolExecutionException("No se pudo registrar la vacuna. Revisa los datos e intenta de nuevo.");
         }
     }

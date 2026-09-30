@@ -37,14 +37,19 @@ import com.myanimal.org.IA_service.domain.model.AiRole;
 import com.myanimal.org.IA_service.domain.model.Message;
 import com.myanimal.org.IA_service.domain.model.MessageRole;
 import com.myanimal.org.IA_service.domain.model.PendingAction;
+import com.myanimal.org.IA_service.domain.model.Pet;
 import com.myanimal.org.IA_service.domain.model.UserContext;
+import com.myanimal.org.IA_service.domain.model.VaccineRecord;
 import com.myanimal.org.IA_service.domain.ports.out.AiModelPort;
 import com.myanimal.org.IA_service.domain.ports.out.ConversationRepositoryPort;
 import com.myanimal.org.IA_service.domain.ports.out.FileStoragePort;
+import com.myanimal.org.IA_service.domain.ports.out.MedicalServicePort;
 import com.myanimal.org.IA_service.domain.ports.out.PendingActionRepositoryPort;
+import com.myanimal.org.IA_service.domain.ports.out.PetServicePort;
 import com.myanimal.org.IA_service.infrastructure.config.AppProperties;
 import com.myanimal.org.IA_service.infrastructure.config.GeminiProperties;
 import com.myanimal.org.IA_service.infrastructure.tools.AiTool;
+import com.myanimal.org.IA_service.infrastructure.tools.RegistrarVacunaTool;
 import com.myanimal.org.IA_service.infrastructure.tools.ToolExecutor;
 import com.myanimal.org.IA_service.infrastructure.tools.ToolRegistry;
 import com.myanimal.org.IA_service.infrastructure.tools.ToolResult;
@@ -288,6 +293,53 @@ class ChatLoopRunnerTest {
     }
 
     @Test
+    void elFlujoDeConfirmacionPropagaElUserIdRealDelContextoHastaElToolNoSoloLaEjecucionDirecta() {
+        // A diferencia de los demás tests de esta clase, acá NO se mockean toolRegistry ni
+        // toolExecutor: se usa un RegistrarVacunaTool real detrás de un ToolExecutor y un
+        // ToolRegistry reales, para probar que confirmPendingAction (el camino de
+        // POST /api/ai/actions/{id}/confirm, no un tool().execute(args, ctx) directo en un
+        // test de tool aislado) también propaga el UserContext real hasta el VaccineRecord.
+        UUID userId = UUID.randomUUID();
+        UUID petId = UUID.randomUUID();
+        UUID conversationId = UUID.randomUUID();
+        UserContext userContext = new UserContext(userId, "Ana", "jwt");
+
+        PetServicePort petServicePort = mock(PetServicePort.class);
+        MedicalServicePort medicalServicePort = mock(MedicalServicePort.class);
+        when(petServicePort.getPet(petId, "jwt")).thenReturn(Pet.builder().id(petId).ownerId(userId).build());
+        when(medicalServicePort.registerVaccine(any(), eq("jwt"))).thenReturn(Map.of("id", UUID.randomUUID()));
+
+        RegistrarVacunaTool realTool = new RegistrarVacunaTool(petServicePort, medicalServicePort);
+        ToolRegistry realToolRegistry = new ToolRegistry(List.of(realTool));
+        ToolExecutor realToolExecutor = new ToolExecutor(realToolRegistry);
+
+        Map<String, Object> arguments = Map.of(
+                "petId", petId.toString(), "name", "Rabia", "applicationDate", "2026-01-15T00:00:00Z");
+        Map<String, Object> envelope = Map.of("callId", "call_1", "arguments", arguments);
+        PendingAction pending = PendingAction.builder()
+                .conversationId(conversationId)
+                .toolName("registrar_vacuna")
+                .toolArgs(envelope)
+                .build();
+
+        when(conversationRepositoryPort.findRecentMessages(eq(conversationId), anyInt())).thenReturn(List.of());
+        AiResponse finalResponse = AiResponse.builder()
+                .functionCalls(List.of()).text("Listo.").modelUsed("gemini-test").build();
+        when(aiModelPort.generate(any())).thenReturn(finalResponse);
+
+        ChatLoopRunner runnerConToolsReales = new ChatLoopRunner(aiModelPort, conversationRepositoryPort,
+                fileStoragePort, realToolRegistry, realToolExecutor, pendingActionRepositoryPort,
+                geminiProperties(5), appProperties(),
+                Clock.fixed(Instant.parse("2026-09-29T15:00:00Z"), ZoneOffset.UTC), SYSTEM_PROMPT_TEMPLATE);
+
+        runnerConToolsReales.confirmPendingAction(userContext, pending);
+
+        ArgumentCaptor<VaccineRecord> captor = ArgumentCaptor.forClass(VaccineRecord.class);
+        verify(medicalServicePort).registerVaccine(captor.capture(), eq("jwt"));
+        assertThat(captor.getValue().userId()).isEqualTo(userId);
+    }
+
+    @Test
     void confirmarUnaPendingActionCuandoElToolTuvoExitoYGeminiFallaDevuelveUnReplyDeRespaldo() {
         UUID conversationId = UUID.randomUUID();
         UserContext userContext = new UserContext(UUID.randomUUID(), "Ana", "jwt");
@@ -323,6 +375,40 @@ class ChatLoopRunnerTest {
         verify(conversationRepositoryPort).append(eq(conversationId),
                 argThat(m -> m.getRole() == MessageRole.MODEL
                         && "Listo: Registrar a Luna (Perro, Labrador)".equals(m.getContenido())));
+    }
+
+    @Test
+    void confirmarUnaPendingActionCuandoElToolFallaYGeminiTambienFallaDevuelveUnMensajeLocalSinPropagar() {
+        UUID conversationId = UUID.randomUUID();
+        UserContext userContext = new UserContext(UUID.randomUUID(), "Ana", "jwt");
+
+        Map<String, Object> arguments = Map.of("petId", UUID.randomUUID().toString(), "name", "Rabia");
+        Map<String, Object> envelope = Map.of("callId", "call_9", "arguments", arguments);
+        PendingAction pending = PendingAction.builder()
+                .conversationId(conversationId)
+                .toolName("registrar_vacuna")
+                .toolArgs(envelope)
+                .build();
+
+        // El tool falló (la mascota dejó de ser del usuario en la última hora, por ejemplo)
+        // Y Gemini tampoco responde: no hay modelo disponible para explicarle el error al
+        // usuario, así que debe armarse un mensaje local sin propagar la excepción.
+        when(toolExecutor.execute(eq("registrar_vacuna"), eq(arguments), eq(userContext)))
+                .thenReturn(new ToolResult(false, null, "Esa mascota no pertenece al usuario autenticado."));
+        when(conversationRepositoryPort.findRecentMessages(eq(conversationId), anyInt())).thenReturn(List.of());
+        when(toolRegistry.declarations()).thenReturn(List.of());
+        when(aiModelPort.generate(any()))
+                .thenThrow(new AiModelUnavailableException("El asistente de IA no está disponible en este momento."));
+
+        ChatResult result = runner(5).confirmPendingAction(userContext, pending);
+
+        assertThat(result.getReply()).contains("Esa mascota no pertenece al usuario autenticado.");
+        assertThat(result.getPendingAction()).isNull();
+        verify(conversationRepositoryPort).append(eq(conversationId),
+                argThat(m -> m.getRole() == MessageRole.TOOL && Boolean.FALSE.equals(m.getToolResult().get("ok"))));
+        verify(conversationRepositoryPort).append(eq(conversationId),
+                argThat(m -> m.getRole() == MessageRole.MODEL
+                        && m.getContenido().contains("Esa mascota no pertenece al usuario autenticado.")));
     }
 
     @Test

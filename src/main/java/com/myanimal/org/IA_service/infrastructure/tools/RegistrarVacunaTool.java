@@ -2,6 +2,7 @@ package com.myanimal.org.IA_service.infrastructure.tools;
 
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
@@ -86,8 +87,10 @@ public class RegistrarVacunaTool implements AiTool {
         // Nunca se llama a medical-service sin confirmar antes que la mascota es del usuario.
         verifyPetOwnership(petId, ctx);
 
-        VaccineRecord record = new VaccineRecord(petId, name, lotNumber, applicationDate, nextDoseDate,
-                veterinarian, notes);
+        // userId nunca sale de args (ni se declara en el schema): medical-service lo exige
+        // para notificaciones, pero el dueño de la sesión lo pone el JWT, no el modelo.
+        VaccineRecord record = new VaccineRecord(ctx.userId(), petId, name, lotNumber, applicationDate,
+                nextDoseDate, veterinarian, notes);
         return medicalServicePort.registerVaccine(record, ctx.rawJwt());
     }
 
@@ -118,9 +121,17 @@ public class RegistrarVacunaTool implements AiTool {
         return value == null ? null : parseIsoOrDate(value, key);
     }
 
+    /**
+     * El modelo manda indistintamente una fecha con offset explícito
+     * ("2026-01-15T00:00:00-05:00"), una con "Z" o una fecha de calendario sin hora
+     * ("2026-01-15") — a diferencia de agendar_cita, acá no hay "Z sospechosa" que
+     * reinterpretar: la hora exacta de una vacuna no es sensible a la zona del usuario, así
+     * que un offset explícito (el que sea) se respeta tal cual. OffsetDateTime.parse acepta
+     * tanto "Z" como cualquier otro offset; Instant.parse solo aceptaba "Z", por eso no basta.
+     */
     private Instant parseIsoOrDate(String value, String fieldName) {
         try {
-            return Instant.parse(value);
+            return OffsetDateTime.parse(value).toInstant();
         } catch (DateTimeParseException ex) {
             try {
                 return LocalDate.parse(value).atStartOfDay(ZoneOffset.UTC).toInstant();
