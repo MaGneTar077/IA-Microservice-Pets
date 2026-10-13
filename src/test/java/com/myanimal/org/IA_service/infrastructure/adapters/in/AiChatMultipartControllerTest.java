@@ -12,32 +12,27 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
-import java.util.Date;
 import java.util.UUID;
-
-import javax.crypto.SecretKey;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import com.myanimal.org.IA_service.application.dto.ChatResult;
+import com.myanimal.org.IA_service.domain.model.UserContext;
 import com.myanimal.org.IA_service.domain.ports.in.ChatUseCase;
 import com.myanimal.org.IA_service.infrastructure.adapters.in.attachment.AttachmentProcessor;
 import com.myanimal.org.IA_service.infrastructure.config.SecurityConfig;
 import com.myanimal.org.IA_service.infrastructure.config.UploadProperties;
-import com.myanimal.org.IA_service.infrastructure.security.JwtProperties;
 import com.myanimal.org.IA_service.infrastructure.security.UserContextProvider;
-
-import io.jsonwebtoken.Jwts;
-import io.jsonwebtoken.security.Keys;
 
 /**
  * Usa el AttachmentProcessor y el UploadProperties REALES (no mockeados) para
@@ -45,7 +40,7 @@ import io.jsonwebtoken.security.Keys;
  * cantidad/tamaño en el endpoint multipart.
  */
 @WebMvcTest(AiChatController.class)
-@Import({ SecurityConfig.class, JwtProperties.class, AttachmentProcessor.class, UploadProperties.class })
+@Import({ SecurityConfig.class, AttachmentProcessor.class, UploadProperties.class })
 @ActiveProfiles("test")
 class AiChatMultipartControllerTest {
 
@@ -62,24 +57,26 @@ class AiChatMultipartControllerTest {
     @MockitoBean
     private UserContextProvider userContextProvider;
 
-    @Value("${security.jwt.secret}")
-    private String jwtSecret;
+    // Etapa 3.5: la validación es contra un JWKS, no un secreto compartido — se mockea
+    // JwtDecoder para pasar el filtro sin firmar un JWT real. Ver la misma nota en
+    // ActionsControllerTest.
+    @MockitoBean
+    private JwtDecoder jwtDecoder;
 
     private final UUID userId = UUID.randomUUID();
-    private String bearerToken;
+    private final String bearerToken = "Bearer fake-token";
 
     @BeforeEach
     void setUp() {
-        when(userContextProvider.current()).thenReturn(new com.myanimal.org.IA_service.domain.model.UserContext(
-                userId, "Ana", "fake.jwt.token"));
+        when(userContextProvider.current()).thenReturn(new UserContext(userId, "Ana", "fake.jwt.token"));
 
-        SecretKey key = Keys.hmacShaKeyFor(jwtSecret.getBytes(StandardCharsets.UTF_8));
-        bearerToken = "Bearer " + Jwts.builder()
+        Jwt fakeJwt = Jwt.withTokenValue("fake-token")
+                .header("alg", "RS256")
                 .claim("id", userId.toString())
-                .issuedAt(new Date())
-                .expiration(Date.from(Instant.now().plus(1, ChronoUnit.HOURS)))
-                .signWith(key)
-                .compact();
+                .issuedAt(Instant.now())
+                .expiresAt(Instant.now().plus(1, ChronoUnit.HOURS))
+                .build();
+        when(jwtDecoder.decode(anyString())).thenReturn(fakeJwt);
     }
 
     private byte[] pngOfSize(int size) {

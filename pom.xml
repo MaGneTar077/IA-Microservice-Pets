@@ -74,23 +74,32 @@
 			<artifactId>spring-boot-starter-validation</artifactId>
 		</dependency>
 
-		<!-- JWT: usar la MISMA versión que user-service y api-gateway -->
+		<!-- Etapa 3.5: validación RS256 contra el JWKS de user-service (fetch/caché/rotación
+			 de kid e iss/aud/exp ya resueltos por la librería, en vez de escribirlo a mano). -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+		</dependency>
+
+		<!-- JWT: ya no lo usa production code (el filtro valida con JwtDecoder/JWKS desde
+			 la etapa 3.5) — se queda solo para firmar tokens RS256 de prueba. -->
 		<dependency>
 			<groupId>io.jsonwebtoken</groupId>
 			<artifactId>jjwt-api</artifactId>
 			<version>${jjwt.version}</version>
+			<scope>test</scope>
 		</dependency>
 		<dependency>
 			<groupId>io.jsonwebtoken</groupId>
 			<artifactId>jjwt-impl</artifactId>
 			<version>${jjwt.version}</version>
-			<scope>runtime</scope>
+			<scope>test</scope>
 		</dependency>
 		<dependency>
 			<groupId>io.jsonwebtoken</groupId>
 			<artifactId>jjwt-jackson</artifactId>
 			<version>${jjwt.version}</version>
-			<scope>runtime</scope>
+			<scope>test</scope>
 		</dependency>
 
 		<!-- Google Cloud Pub/Sub -->

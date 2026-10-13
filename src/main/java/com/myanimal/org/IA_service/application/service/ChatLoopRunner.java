@@ -56,8 +56,7 @@ import lombok.extern.slf4j.Slf4j;
 public class ChatLoopRunner {
 
     private static final DateTimeFormatter TITLE_DATE_FORMAT = DateTimeFormatter.ofPattern("dd/MM/yyyy");
-    private static final String SESSION_EXPIRED_MESSAGE =
-            "Tu sesión expiró. Por favor inicia sesión de nuevo para continuar.";
+    private static final String SESSION_EXPIRED_MESSAGE = "Tu sesión expiró, vuelve a intentarlo.";
     private static final String ITERATIONS_EXHAUSTED_MESSAGE =
             "No pude completar tu solicitud en este momento. ¿Puedes intentarlo de nuevo o darme más detalles?";
 
@@ -111,7 +110,7 @@ public class ChatLoopRunner {
                         validation = toolExecutor.validate(call.name(), call.args(), userContext);
                     } catch (UpstreamSessionExpiredException ex) {
                         log.warn("Sesión expirada validando una acción pendiente: {}", ex.getMessage());
-                        return sessionExpiredResult(conversationId);
+                        throw sessionExpired(ex);
                     }
                     if (!validation.ok()) {
                         // No se crea la pending action: el modelo lee el error y se lo explica
@@ -131,7 +130,7 @@ public class ChatLoopRunner {
                     result = toolExecutor.execute(call.name(), call.args(), userContext);
                 } catch (UpstreamSessionExpiredException ex) {
                     log.warn("Sesión expirada durante el loop de tools: {}", ex.getMessage());
-                    return sessionExpiredResult(conversationId);
+                    throw sessionExpired(ex);
                 }
                 persistToolMessage(conversationId, call, result);
             }
@@ -154,12 +153,27 @@ public class ChatLoopRunner {
                 .build();
     }
 
-    private ChatResult sessionExpiredResult(UUID conversationId) {
-        persistModelText(conversationId, SESSION_EXPIRED_MESSAGE);
-        return ChatResult.builder()
-                .conversationId(conversationId)
-                .reply(SESSION_EXPIRED_MESSAGE)
-                .build();
+    /**
+     * Etapa 3.5, parte C: un 401 de un servicio destino ya NO se traduce en un ChatResult
+     * de 200 con un texto amable — se propaga como excepción real para que
+     * ApiExceptionHandler responda 401 con {"error":"TOKEN_EXPIRED",...}. El frontend
+     * necesita ese código para saber que debe renovar con su refresh token, no reintentar
+     * con la misma credencial.
+     */
+    private UpstreamSessionExpiredException sessionExpired(UpstreamSessionExpiredException cause) {
+        return new UpstreamSessionExpiredException(SESSION_EXPIRED_MESSAGE, cause);
+    }
+
+    /**
+     * Para cuando la sesión expira justo después de que una acción confirmada SÍ se
+     * ejecutó (ver confirmPendingAction): "no dejar la acción a medias" significa decir qué
+     * se completó, no solo que la sesión expiró.
+     */
+    private UpstreamSessionExpiredException sessionExpiredAfter(String completedDescription,
+            UpstreamSessionExpiredException cause) {
+        String message = "Ya completé: " + completedDescription + ". " + SESSION_EXPIRED_MESSAGE
+                + " El resto quedó pendiente.";
+        return new UpstreamSessionExpiredException(message, cause);
     }
 
     private ChatResult iterationsExhaustedResult(UUID conversationId) {
@@ -188,22 +202,36 @@ public class ChatLoopRunner {
         try {
             result = toolExecutor.execute(pending.getToolName(), arguments, userContext);
         } catch (UpstreamSessionExpiredException ex) {
+            // La escritura en sí nunca ocurrió: nada que reportar como "completado".
             log.warn("Sesión expirada confirmando una pending action: {}", ex.getMessage());
-            return sessionExpiredResult(pending.getConversationId());
+            throw sessionExpired(ex);
         }
 
         AiFunctionCall call = new AiFunctionCall(callId, pending.getToolName(), arguments, thoughtSignature);
         persistToolMessage(pending.getConversationId(), call, result);
 
-        // La pending action ya se consumió (ejecutó o falló) antes de esta llamada: si
-        // Gemini falla redactando la respuesta final (cuota, contenido bloqueado, sin
-        // respuesta, etc.) NUNCA se propaga como error HTTP. Si la escritura tuvo éxito,
+        // La pending action ya se consumió (ejecutó o falló) antes de esta llamada: una
+        // falla de Gemini redactando la respuesta final (cuota, contenido bloqueado, sin
+        // respuesta, etc.) nunca se propaga como error HTTP. Si la escritura tuvo éxito,
         // reintentar desde el móvil pensando que falló duplicaría lo que ya se creó; si
         // falló, no hay modelo disponible para explicárselo al usuario, así que se arma un
         // mensaje local con el error del tool en vez de dejar que la excepción llegue cruda
-        // al controller.
+        // al controller. Un 401 en este siguiente tramo es distinto: ahí la escritura SÍ
+        // completó, así que el 401 que llega al frontend debe decirlo.
         try {
             return run(userContext, pending.getConversationId());
+        } catch (UpstreamSessionExpiredException ex) {
+            log.warn("La sesión expiró redactando la respuesta de la acción '{}' (ok={}): {}",
+                    pending.getToolName(), result.ok(), ex.getMessage());
+            if (!result.ok()) {
+                // La escritura ya había fallado por su cuenta: no hay nada "completado"
+                // que reportar, solo la sesión expirada.
+                throw sessionExpired(ex);
+            }
+            String descripcion = toolRegistry.findByName(pending.getToolName())
+                    .map(tool -> tool.describe(arguments))
+                    .orElse(pending.getToolName());
+            throw sessionExpiredAfter(descripcion, ex);
         } catch (AiModelException | AiModelUnavailableException | AiContentBlockedException ex) {
             log.warn("La acción '{}' terminó (ok={}) pero Gemini falló redactando la respuesta: {}",
                     pending.getToolName(), result.ok(), ex.getMessage());

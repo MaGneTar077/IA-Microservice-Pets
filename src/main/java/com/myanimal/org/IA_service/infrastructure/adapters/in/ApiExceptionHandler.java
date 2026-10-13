@@ -18,6 +18,7 @@ import com.myanimal.org.IA_service.domain.exception.PendingActionExpiredExceptio
 import com.myanimal.org.IA_service.domain.exception.PendingActionNotFoundException;
 import com.myanimal.org.IA_service.domain.exception.TooManyAttachmentsException;
 import com.myanimal.org.IA_service.domain.exception.UnsupportedAttachmentTypeException;
+import com.myanimal.org.IA_service.domain.exception.UpstreamSessionExpiredException;
 import com.myanimal.org.IA_service.infrastructure.adapters.in.dto.ErrorResponse;
 
 import lombok.extern.slf4j.Slf4j;
@@ -86,6 +87,20 @@ public class ApiExceptionHandler {
     public ResponseEntity<ErrorResponse> handlePendingActionExpired(PendingActionExpiredException ex) {
         return ResponseEntity.status(HttpStatus.GONE)
                 .body(new ErrorResponse("PENDING_ACTION_EXPIRED", "La acción ya expiró."));
+    }
+
+    /**
+     * Etapa 3.5, parte C: el único código que el frontend necesita reconocer para saber que
+     * debe renovar con su refresh token y repetir la petición (nunca reintentar con otra
+     * credencial). ex.getMessage() ya es texto final para el usuario — ChatLoopRunner lo
+     * arma ahí, incluyendo qué pasos ya se completaron si los hubo antes de que la sesión
+     * expirara a mitad de una confirmación.
+     */
+    @ExceptionHandler(UpstreamSessionExpiredException.class)
+    public ResponseEntity<ErrorResponse> handleSessionExpired(UpstreamSessionExpiredException ex) {
+        log.warn("Sesión expirada llamando a un servicio destino: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                .body(new ErrorResponse("TOKEN_EXPIRED", ex.getMessage()));
     }
 
     @ExceptionHandler(InvalidChatRequestException.class)

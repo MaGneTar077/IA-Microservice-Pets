@@ -8,6 +8,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
@@ -15,17 +16,18 @@ import org.springframework.test.web.servlet.MockMvc;
 import com.myanimal.org.IA_service.domain.ports.in.ChatUseCase;
 import com.myanimal.org.IA_service.infrastructure.adapters.in.AiChatController;
 import com.myanimal.org.IA_service.infrastructure.adapters.in.attachment.AttachmentProcessor;
-import com.myanimal.org.IA_service.infrastructure.security.JwtProperties;
 import com.myanimal.org.IA_service.infrastructure.security.UserContextProvider;
 
 /**
  * A diferencia de JwtAuthenticationFilterTest (que prueba el filtro aislado, instanciado a
  * mano), este test levanta la cadena REAL de Spring Security (SecurityConfig + el bean real
  * de JwtAuthenticationFilter) para comprobar que el filtro está bien enganchado en el chain,
- * no solo que funciona por su cuenta.
+ * no solo que funciona por su cuenta. Solo prueba el caso sin Authorization, así que ni
+ * siquiera necesita que JwtDecoder haga algo — solo tiene que existir para que el filtro
+ * (que ahora lo pide por constructor) se pueda instanciar en este slice.
  */
 @WebMvcTest(AiChatController.class)
-@Import({ SecurityConfig.class, JwtProperties.class })
+@Import(SecurityConfig.class)
 @ActiveProfiles("test")
 class SecurityChainIntegrationTest {
 
@@ -40,6 +42,9 @@ class SecurityChainIntegrationTest {
 
     @MockitoBean
     private AttachmentProcessor attachmentProcessor;
+
+    @MockitoBean
+    private JwtDecoder jwtDecoder;
 
     @Test
     void sinAuthorizationDevuelve401() throws Exception {

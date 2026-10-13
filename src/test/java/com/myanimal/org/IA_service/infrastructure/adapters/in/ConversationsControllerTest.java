@@ -1,26 +1,24 @@
 package com.myanimal.org.IA_service.infrastructure.adapters.in;
 
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
-import java.util.Date;
 import java.util.List;
 import java.util.UUID;
-
-import javax.crypto.SecretKey;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
@@ -32,14 +30,10 @@ import com.myanimal.org.IA_service.domain.exception.ConversationNotFoundExceptio
 import com.myanimal.org.IA_service.domain.model.UserContext;
 import com.myanimal.org.IA_service.domain.ports.in.ConversationQueryUseCase;
 import com.myanimal.org.IA_service.infrastructure.config.SecurityConfig;
-import com.myanimal.org.IA_service.infrastructure.security.JwtProperties;
 import com.myanimal.org.IA_service.infrastructure.security.UserContextProvider;
 
-import io.jsonwebtoken.Jwts;
-import io.jsonwebtoken.security.Keys;
-
 @WebMvcTest(ConversationsController.class)
-@Import({ SecurityConfig.class, JwtProperties.class })
+@Import(SecurityConfig.class)
 @ActiveProfiles("test")
 class ConversationsControllerTest {
 
@@ -52,23 +46,26 @@ class ConversationsControllerTest {
     @MockitoBean
     private UserContextProvider userContextProvider;
 
-    @Value("${security.jwt.secret}")
-    private String jwtSecret;
+    // Etapa 3.5: la validación es contra un JWKS, no un secreto compartido — se mockea
+    // JwtDecoder para pasar el filtro sin firmar un JWT real. Ver la misma nota en
+    // ActionsControllerTest.
+    @MockitoBean
+    private JwtDecoder jwtDecoder;
 
     private final UUID userId = UUID.randomUUID();
-    private String bearerToken;
+    private final String bearerToken = "Bearer fake-token";
 
     @BeforeEach
     void setUp() {
         when(userContextProvider.current()).thenReturn(new UserContext(userId, "Ana", "fake.jwt.token"));
 
-        SecretKey key = Keys.hmacShaKeyFor(jwtSecret.getBytes(StandardCharsets.UTF_8));
-        bearerToken = "Bearer " + Jwts.builder()
+        Jwt fakeJwt = Jwt.withTokenValue("fake-token")
+                .header("alg", "RS256")
                 .claim("id", userId.toString())
-                .issuedAt(new Date())
-                .expiration(Date.from(Instant.now().plus(1, ChronoUnit.HOURS)))
-                .signWith(key)
-                .compact();
+                .issuedAt(Instant.now())
+                .expiresAt(Instant.now().plus(1, ChronoUnit.HOURS))
+                .build();
+        when(jwtDecoder.decode(anyString())).thenReturn(fakeJwt);
     }
 
     @Test

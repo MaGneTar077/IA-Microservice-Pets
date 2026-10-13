@@ -59,6 +59,11 @@ public class PetServiceAdapter implements PetServicePort {
             if (ex.getStatusCode().value() == 401) {
                 throw new UpstreamSessionExpiredException("La sesión expiró al llamar a pet-service.", ex);
             }
+            if (ex.getStatusCode().value() == 403) {
+                log.warn("pet-service respondió 403 al consultar la mascota {}: {}",
+                        petId, ex.getResponseBodyAsString());
+                throw new ToolExecutionException("No tienes permiso para hacer eso.");
+            }
             if (ex.getStatusCode().value() == 404) {
                 log.warn("pet-service respondió 404 al consultar la mascota {}: {}",
                         petId, ex.getResponseBodyAsString());
@@ -100,6 +105,10 @@ public class PetServiceAdapter implements PetServicePort {
     private void handleError(WebClientResponseException ex, String action, String businessMessage) {
         if (ex.getStatusCode().value() == 401) {
             throw new UpstreamSessionExpiredException("La sesión expiró al llamar a pet-service.", ex);
+        }
+        if (ex.getStatusCode().value() == 403) {
+            log.warn("pet-service respondió 403 {}: {}", action, ex.getResponseBodyAsString());
+            throw new ToolExecutionException("No tienes permiso para hacer eso.");
         }
         log.warn("pet-service respondió {} {}: {}", ex.getStatusCode().value(), action, ex.getResponseBodyAsString());
         throw new ToolExecutionException(businessMessage);

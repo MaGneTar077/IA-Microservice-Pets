@@ -328,7 +328,8 @@ Los adjuntos no se guardan en Postgres: van a Supabase Storage y en `ai_message`
 | `PORT` | Puerto HTTP. Cloud Run lo inyecta — **nunca usar `SERVER_PORT`** | automático |
 | `GEMINI_API_KEY` | API key de Google AI Studio | Secret Manager |
 | `GEMINI_MODEL` | Identificador del modelo | env var |
-| `JWT_SECRET` | **Idéntico** al de user, pet, veterinary y gateway | Secret Manager |
+| `JWT_JWKS_URI` | JWKS público de user-service (RS256, etapa 3.5) | env var |
+| `JWT_ISSUER`, `JWT_AUDIENCE` | `iss`/`aud` esperados en el token | env var |
 | `DB_URL`, `DB_USERNAME`, `DB_PASSWORD` | Supabase Transaction Pooler | Secret Manager |
 | `GCP_PROJECT_ID` | Proyecto de Google Cloud | env var |
 | `GATEWAY_URL` | Base URL del api-gateway para tool calls | env var |
@@ -429,7 +430,9 @@ gcloud secrets add-iam-policy-binding gemini-api-key \
   --role="roles/secretmanager.secretAccessor"
 ```
 
-Y en el deploy: `--set-secrets="GEMINI_API_KEY=gemini-api-key:latest,JWT_SECRET=jwt-secret:latest,…"`.
+Y en el deploy: `--set-secrets="GEMINI_API_KEY=gemini-api-key:latest,…"`. `JWT_JWKS_URI`/
+`JWT_ISSUER`/`JWT_AUDIENCE` no son secretos (es una URL pública y dos identificadores) — van
+como `--set-env-vars` normales, no por Secret Manager.
 
 La service account necesita `roles/pubsub.publisher` sobre `ai-suggestion-generated`, y la
 cuenta que usa Pub/Sub para el push necesita `roles/run.invoker` sobre este servicio.

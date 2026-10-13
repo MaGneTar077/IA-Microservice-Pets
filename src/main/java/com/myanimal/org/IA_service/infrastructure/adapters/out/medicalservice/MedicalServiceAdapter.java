@@ -53,6 +53,10 @@ public class MedicalServiceAdapter implements MedicalServicePort {
             if (ex.getStatusCode().value() == 401) {
                 throw new UpstreamSessionExpiredException("La sesión expiró al llamar a medical-service.", ex);
             }
+            if (ex.getStatusCode().value() == 403) {
+                log.warn("medical-service respondió 403 al registrar una vacuna: {}", ex.getResponseBodyAsString());
+                throw new ToolExecutionException("No tienes permiso para hacer eso.");
+            }
             log.warn("medical-service respondió {} al registrar una vacuna: {}",
                     ex.getStatusCode().value(), ex.getResponseBodyAsString());
             throw new ToolExecutionException("No se pudo registrar la vacuna. Revisa los datos e intenta de nuevo.");

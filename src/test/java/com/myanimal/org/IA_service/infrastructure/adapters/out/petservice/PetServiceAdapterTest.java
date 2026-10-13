@@ -151,6 +151,16 @@ class PetServiceAdapterTest {
     }
 
     @Test
+    void getPetConUn403LanzaToolExecutionExceptionConMensajeDePermiso() {
+        Queue<Object> responses = new ConcurrentLinkedQueue<>(List.of(status(HttpStatus.FORBIDDEN)));
+        PetServiceAdapter adapter = buildAdapter(responses);
+
+        assertThatThrownBy(() -> adapter.getPet(UUID.randomUUID(), "jwt"))
+                .isInstanceOf(ToolExecutionException.class)
+                .hasMessageContaining("permiso");
+    }
+
+    @Test
     void createPetDevuelveLaMascotaCreada() {
         String responseJson = """
                 {
@@ -175,5 +185,15 @@ class PetServiceAdapterTest {
 
         assertThatThrownBy(() -> adapter.createPet(Pet.builder().name("Luna").build(), "jwt"))
                 .isInstanceOf(ToolExecutionException.class);
+    }
+
+    @Test
+    void createPetConUn403LanzaToolExecutionExceptionConMensajeDePermiso() {
+        Queue<Object> responses = new ConcurrentLinkedQueue<>(List.of(status(HttpStatus.FORBIDDEN)));
+        PetServiceAdapter adapter = buildAdapter(responses);
+
+        assertThatThrownBy(() -> adapter.createPet(Pet.builder().name("Luna").build(), "jwt"))
+                .isInstanceOf(ToolExecutionException.class)
+                .hasMessageContaining("permiso");
     }
 }

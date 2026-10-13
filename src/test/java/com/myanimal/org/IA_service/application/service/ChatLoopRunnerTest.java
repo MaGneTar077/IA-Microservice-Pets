@@ -1,6 +1,7 @@
 package com.myanimal.org.IA_service.application.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.argThat;
@@ -412,7 +413,7 @@ class ChatLoopRunnerTest {
     }
 
     @Test
-    void confirmarUnaPendingActionCuyoToolDa401RespondeQueLaSesionExpiro() {
+    void confirmarUnaPendingActionCuyoToolDa401PropagaComoTokenExpiredSinReportarNadaCompletado() {
         UUID conversationId = UUID.randomUUID();
         UserContext userContext = new UserContext(UUID.randomUUID(), "Ana", "jwt");
 
@@ -425,10 +426,68 @@ class ChatLoopRunnerTest {
         when(toolExecutor.execute(eq("crear_mascota"), any(), eq(userContext)))
                 .thenThrow(new UpstreamSessionExpiredException("expiró", new RuntimeException("401")));
 
-        ChatResult result = runner(5).confirmPendingAction(userContext, pending);
-
-        assertThat(result.getReply()).contains("sesión expiró");
+        // La escritura en sí nunca ocurrió (el 401 vino de ejecutar el tool, no de Gemini
+        // después): el mensaje no debe decir "ya completé" nada.
+        assertThatThrownBy(() -> runner(5).confirmPendingAction(userContext, pending))
+                .isInstanceOf(UpstreamSessionExpiredException.class)
+                .hasMessageContaining("sesión expiró")
+                .hasMessageNotContaining("completé");
         verify(aiModelPort, never()).generate(any());
+    }
+
+    @Test
+    void confirmarUnaPendingActionQueSiEjecutoYLuegoLaSesionExpiroRedactandoDiceQueSeCompleto() {
+        UUID conversationId = UUID.randomUUID();
+        UserContext userContext = new UserContext(UUID.randomUUID(), "Ana", "jwt");
+
+        Map<String, Object> arguments = Map.of("name", "Luna", "species", "Perro");
+        Map<String, Object> envelope = Map.of("callId", "call_9", "arguments", arguments);
+        PendingAction pending = PendingAction.builder()
+                .conversationId(conversationId)
+                .toolName("crear_mascota")
+                .toolArgs(envelope)
+                .build();
+
+        AiTool tool = mock(AiTool.class);
+        when(tool.describe(arguments)).thenReturn("Registrar a Luna");
+        when(toolRegistry.findByName("crear_mascota")).thenReturn(Optional.of(tool));
+
+        // El tool SÍ se ejecutó con éxito; el 401 llega después, al volver a llamar a
+        // Gemini para redactar la respuesta final (ej. listar_mascotas de seguimiento).
+        when(toolExecutor.execute(eq("crear_mascota"), eq(arguments), eq(userContext)))
+                .thenReturn(new ToolResult(true, Map.of("id", UUID.randomUUID()), null));
+        when(conversationRepositoryPort.findRecentMessages(eq(conversationId), anyInt())).thenReturn(List.of());
+        when(toolRegistry.declarations()).thenReturn(List.of());
+        when(aiModelPort.generate(any()))
+                .thenThrow(new UpstreamSessionExpiredException("expiró", new RuntimeException("401")));
+
+        assertThatThrownBy(() -> runner(5).confirmPendingAction(userContext, pending))
+                .isInstanceOf(UpstreamSessionExpiredException.class)
+                .hasMessageContaining("Registrar a Luna")
+                .hasMessageContaining("sesión expiró");
+    }
+
+    @Test
+    void unA401ValidandoUnaAccionConConfirmacionTambienPropagaComoTokenExpired() {
+        UUID conversationId = UUID.randomUUID();
+        UserContext userContext = new UserContext(UUID.randomUUID(), "Ana", "jwt");
+
+        AiTool tool = mock(AiTool.class);
+        when(tool.requiresConfirmation()).thenReturn(true);
+        when(toolRegistry.findByName("registrar_vacuna")).thenReturn(Optional.of(tool));
+        when(toolRegistry.declarations()).thenReturn(List.of());
+        when(conversationRepositoryPort.findRecentMessages(eq(conversationId), anyInt())).thenReturn(List.of());
+
+        AiFunctionCall call = new AiFunctionCall("call_1", "registrar_vacuna", Map.of("petId", "x"), null);
+        AiResponse response = AiResponse.builder().functionCalls(List.of(call)).modelUsed("gemini-test").build();
+        when(aiModelPort.generate(any())).thenReturn(response);
+        when(toolExecutor.validate(eq("registrar_vacuna"), any(), eq(userContext)))
+                .thenThrow(new UpstreamSessionExpiredException("expiró verificando la mascota", new RuntimeException("401")));
+
+        assertThatThrownBy(() -> runner(5).run(userContext, conversationId))
+                .isInstanceOf(UpstreamSessionExpiredException.class)
+                .hasMessageContaining("sesión expiró");
+        verify(pendingActionRepositoryPort, never()).create(any(), any(), any(), any());
     }
 
     @Test
@@ -455,7 +514,7 @@ class ChatLoopRunnerTest {
     }
 
     @Test
-    void unA401DeUnServicioDestinoCortaElLoopYRespondeQueLaSesionExpiro() {
+    void unA401DeUnServicioDestinoCortaElLoopYPropagaComoTokenExpired() {
         UUID conversationId = UUID.randomUUID();
         UserContext userContext = new UserContext(UUID.randomUUID(), "Ana", "jwt");
 
@@ -471,13 +530,14 @@ class ChatLoopRunnerTest {
         when(toolExecutor.execute(eq("listar_mascotas"), any(), eq(userContext)))
                 .thenThrow(new UpstreamSessionExpiredException("expiró", new RuntimeException("401")));
 
-        ChatResult result = runner(5).run(userContext, conversationId);
-
-        assertThat(result.getReply()).contains("sesión expiró");
-        assertThat(result.getPendingAction()).isNull();
+        // Ya no se traduce en un ChatResult de 200 con un reply amable: se propaga para que
+        // ApiExceptionHandler responda 401 con TOKEN_EXPIRED — el frontend necesita ese
+        // código, no un texto de chat, para saber que debe renovar el token.
+        assertThatThrownBy(() -> runner(5).run(userContext, conversationId))
+                .isInstanceOf(UpstreamSessionExpiredException.class)
+                .hasMessageContaining("sesión expiró");
         verify(aiModelPort, times(1)).generate(any());
-        verify(conversationRepositoryPort).append(eq(conversationId),
-                argThat(m -> m.getRole() == MessageRole.MODEL && m.getContenido().contains("sesión expiró")));
+        verify(conversationRepositoryPort, never()).append(eq(conversationId), any());
     }
 
     @Test

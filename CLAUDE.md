@@ -66,18 +66,21 @@ El JWT del usuario se propaga en cada tool call. **El ai-service nunca decide pe
 el modelo alucina un `petId` ajeno, `pet-service` responde 403 y ese 403 vuelve al modelo como
 `functionResponse`. La IA es un cliente más, no un *security boundary*.
 
-`JWT_SECRET` debe ser idéntico al de user, pet, veterinary y gateway.
 `/internal/**` lo invoca Pub/Sub con un ID token de Google: fuera del filtro de JWT.
 
-**Detalles confirmados contra `user-service` (etapa 2):**
-- La clave HS256 se construye con `Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8))`
-  — **no** es base64. `user-service` usa jjwt 0.11.x (`parserBuilder`/`setSigningKey`); nuestro
-  `pom` tiene 0.12.6, API distinta (`Jwts.parser().verifyWith(key).build().parseSignedClaims(...)`)
-  pero misma clave/algoritmo, tokens compatibles entre versiones.
-- El UUID del usuario viaja en el claim **`id`**, no en `sub` (`sub` es el email). Configurable
-  vía `security.jwt.user-id-claim` (default `id`). Si el valor de ese claim no parsea como UUID,
-  401 inmediato y se loguea el nombre del claim y el valor recibido (nunca el token completo).
-- Tokens duran 1 hora.
+**Autenticación RS256 + JWKS (etapa 3.5, reemplaza HS256 con secreto compartido):**
+- `user-service` migró a RS256; validamos contra su JWKS público
+  (`security.jwt.jwks-uri`), no contra un secreto. **No hay camino legacy**: un token HS256
+  viejo simplemente falla la verificación de firma → 401. Si durante pruebas aparece uno,
+  se pide un token nuevo, no se arregla código.
+- El UUID del usuario viaja en el claim **`id`** (ahora coincide con `sub`, que antes era el
+  email). A diferencia de la etapa 2, el nombre del claim **ya no es configurable**
+  (`security.jwt.user-id-claim` se eliminó) — quedó fijo en el filtro.
+- Si el claim `id` no parsea como UUID, 401 inmediato y se loguea el nombre del claim y el
+  valor recibido (nunca el token completo). Mismo principio para `vet_id` si viene mal
+  formado, pero sin tumbar la autenticación completa (los claims de clínica no se usan
+  todavía).
+- Tokens duran 1 hora (podría bajar a 15 min más adelante).
 
 ## Convenciones de código
 
@@ -87,8 +90,10 @@ el modelo alucina un `petId` ajeno, `pet-service` responde 403 y ese 403 vuelve 
 - Tests: `@MockitoBean`, `@WithMockUser`, `.with(csrf())`, `@ExtendWith(MockitoExtension.class)`.
   Excepción: en `@WebMvcTest` de controllers bajo `/api/ai/**`, `@WithMockUser` no sirve
   (ver "Trampas conocidas" — el `JwtAuthenticationFilter` real siempre corre ahí); hay que
-  importar `SecurityConfig`+`JwtProperties` y mandar un JWT real. CSRF ya está desactivado
-  para `/api/**`, así que `.with(csrf())` no hace falta en esos tests.
+  importar `SecurityConfig` y mockear `JwtDecoder` (`@MockitoBean JwtDecoder`, stub de
+  `decode(anyString())` devolviendo un `Jwt` con los claims que haga falta) — desde la etapa
+  3.5 ya no se firma un JWT real con `JwtProperties` porque no hay secreto que firmar contra.
+  CSRF ya está desactivado para `/api/**`, así que `.with(csrf())` no hace falta en esos tests.
 - En tests preferir `.builder()...build()` sobre constructores posicionales.
 - Al agregar un parámetro a un constructor con `@RequiredArgsConstructor`, revisar los tests
   que instancian la clase a mano — rompen con `cannot be applied to given types`.
@@ -114,6 +119,11 @@ el modelo alucina un `petId` ajeno, `pet-service` responde 403 y ese 403 vuelve 
   Pooler, y esa consulta fallaba intermitentemente (`Unable to determine Dialect without
   JDBC metadata`). Fix: dialecto explícito (`hibernate.dialect: PostgreSQLDialect`) +
   `hibernate.boot.allow_jdbc_metadata_access: false` en `application.yaml`.
+- **El proyecto de Supabase se pausa por inactividad en el free tier.** Síntoma:
+  `FATAL: (ENOTFOUND) tenant/user postgres.<ref> not found` al conectar — no es un
+  problema de credenciales (`DB_USERNAME`/`DB_PASSWORD` siguen siendo correctas), es que
+  el proyecto entero está pausado y el Transaction Pooler no encuentra el tenant. Se
+  arregla restaurando el proyecto desde el dashboard de Supabase, no tocando config.
 - Los tests (`src/test/resources/application-test.yaml`, perfil `test`) excluyen
   autoconfig de datasource/JPA, Redis y GCP Pub/Sub. `IaServiceApplicationTests` no toca
   Supabase, Upstash ni GCP reales — corre 100% offline.
@@ -132,11 +142,11 @@ el modelo alucina un `petId` ajeno, `pet-service` responde 403 y ese 403 vuelve 
   `@Import`ee), porque el allowlist de tipos de esa slice trata los filtros como parte
   de la capa web. `JwtAuthenticationFilter` (un `@Component` + `OncePerRequestFilter`)
   se cuela en **cualquier** `@WebMvcTest` del proyecto y exige que `JwtProperties` esté
-  disponible — si no, `UnsatisfiedDependencyException` al arrancar el slice. Por eso los
-  tests de controllers bajo `/api/ai/**` importan `SecurityConfig` + `JwtProperties` y
-  mandan un JWT real firmado con el `security.jwt.secret` del perfil `test`, en vez de
-  `@WithMockUser` (que no sirve de nada: el filtro real corre igual y rechaza la
-  petición si no trae un `Authorization` válido).
+  disponible — si no, `UnsatisfiedDependencyException` al arrancar el slice. Desde la etapa
+  3.5 esa dependencia es `JwtDecoder`, no `JwtProperties`: los tests de controllers bajo
+  `/api/ai/**` importan `SecurityConfig` y mockean `JwtDecoder` (`@MockitoBean`, stub de
+  `decode(anyString())`) en vez de `@WithMockUser` (que no sirve de nada: el filtro real
+  corre igual y rechaza la petición si no trae un `Authorization` válido).
 - `ConversationRepositoryPort` tiene dos implementaciones: `JpaConversationRepositoryAdapter`
   (`@Profile("!test")`, la real) y `NoopConversationRepositoryPort` en `src/test`
   (`@Profile("test")`, lanza `UnsupportedOperationException` si algo intenta usarla de
@@ -401,6 +411,106 @@ el modelo alucina un `petId` ajeno, `pet-service` responde 403 y ese 403 vuelve 
     misma pending action — el usuario tiene que volver a pedírselo al asistente
     desde cero. Detectado al revisar el fix de arriba; falta decidir si se mantiene
     (ver conversación) o se cambia el orden/estados.
+- **Etapa 3.5, parte A (checkpoint, RS256 + JWKS)**:
+  - `user-service` migró de HS256 con secreto compartido a RS256 con JWKS público;
+    `JwtAuthenticationFilter` rechazaba todos los tokens nuevos. Se mantuvo el filtro
+    propio (`OncePerRequestFilter`) en vez de adoptar el DSL
+    `http.oauth2ResourceServer(...)` de Spring Security — ese reemplaza el filtro por
+    el suyo y el principal deja de ser `UserContext` (sería un `Jwt` crudo), lo que
+    hubiera obligado a escribir un `Converter` custom para lograr lo mismo que ya
+    había. En cambio, el filtro ahora recibe un `JwtDecoder` por constructor (antes
+    `JwtProperties` + `SecretKey` armado a mano) y usa `spring-boot-starter-
+    oauth2-resource-server` solo para lo que resuelve bien: fetch/caché del JWKS,
+    verificación RS256, rotación de `kid` (comportamiento de
+    `NimbusJwtDecoder`/`RemoteJWKSet`, no escrito a mano) y validación de `iss`/`aud`/
+    `exp`.
+  - **Sin camino legacy a propósito**: no existe `JWT_ACCEPT_LEGACY`.
+    `JWT_SECRET`/`security.jwt.secret` se eliminaron del proyecto entero (`pom`,
+    `JwtProperties`, `application.yaml`, `.env.example`, `README.md`). Un token
+    HS256 viejo falla la verificación de firma RS256 sin necesidad de código
+    especial — 401 por el camino normal. Los tokens vencen en máximo 1 hora, así
+    que no hay ventana real que proteger con doble validación.
+  - **`JwtDecoderConfig`** (`infrastructure.config`, nuevo) arma el `@Bean
+    JwtDecoder` (`NimbusJwtDecoder.withJwkSetUri(...)` + validador de `iss`/`aud`) y
+    expone `buildValidator(issuer, audience)` como `public static` **a propósito**:
+    `JwtAuthenticationFilterTest` lo reutiliza para armar su propio decoder de
+    prueba con la misma validación que producción, en vez de reimplementarla en el
+    test (que probaría otra cosa, no lo que corre de verdad).
+  - **`security.jwt.user-id-claim` se eliminó** — el claim `id` quedó fijo en el
+    filtro (`sub` ahora vale lo mismo, pero `id` es el que ya existía). Ya no hace
+    falta que sea configurable.
+  - **`UserContext` ganó `email`, `platformRole`, `ctx`, `vetId`, `vetRole`,
+    `vetLicensed`** (claims del token, token de clínica con `ctx: VETERINARY` trae
+    los `vet_*` poblados, token de usuario los trae `null`). Nadie los usa todavía
+    — se capturan ahora porque el filtro ya se estaba tocando, antes de que
+    MyAnimaLogVet los necesite. Pasó a tener `@Builder` (Lombok soporta `@Builder`
+    sobre un `record` sin alterar sus accessors `userId()`/`username()`/etc., así
+    que ningún call site existente se rompió) y, además del constructor canónico de
+    9 argumentos, uno de conveniencia de 3 (`userId, username, rawJwt`) que delega
+    con `null` en los campos nuevos — así los ~15 archivos de test que hacían `new
+    UserContext(id, "Ana", "jwt")` sin que les importen los claims de clínica
+    siguen compilando sin tocarlos. Solo el filtro construye con `.builder()`.
+  - **`jjwt-api`/`jjwt-impl`/`jjwt-jackson` pasaron a `scope: test`** — ningún
+    código de producción los usa ya (el filtro depende de `JwtDecoder`, no de
+    `Jwts.parser()`); se quedan solo para firmar tokens RS256 de prueba. **Ojo para
+    quien toque autenticación más adelante**: si alguien agrega a `main` un import
+    de `io.jsonwebtoken.*`, el error va a ser "no se puede resolver el símbolo" en
+    vez de un aviso claro de que la librería es solo de test — no hay guard
+    automático para esto, es a ojo en code review.
+  - **Tests de `JwtAuthenticationFilterTest`**: la mayoría de los casos
+    (token válido, `iss`/`aud` incorrecto, expirado, firma inválida, HS256 legacy,
+    claims de clínica) usan `NimbusJwtDecoder.withPublicKey(...)` directo — sin
+    red — con el mismo par de llaves RSA generado en el test. Solo la rotación de
+    `kid` necesita un JWKS servido de verdad: se levanta un
+    `com.sun.net.httpserver.HttpServer` efímero en `localhost` (del JDK, cero
+    dependencias nuevas) que sirve un JWKS armado con `com.nimbusds.jose.jwk.JWKSet`
+    (ya en el classpath por el starter). El servidor se guarda en un campo de
+    instancia y un único `@AfterEach` lo apaga incondicionalmente — corre aunque el
+    test falle, así no quedan puertos colgados entre corridas.
+  - Pendiente, explícitamente fuera de esta parada: Parte B (gateway — hay que
+    confirmar primero qué rutas existen hacia pet/medical/calendar antes de tocar
+    URLs) y Parte C (401 con `TOKEN_EXPIRED`, 403 sin reintentar). Se retoma
+    después de que se pruebe esta parte con un token real de `user-service`.
+  - **Probada con un token RS256 real de `user-service`**: autentica, el `userId`
+    sale correcto del claim `id`, el historial se mantiene entre turnos y los 4
+    tools siguen funcionando. Parte A cerrada.
+- **Etapa 3.5, parte C (401/403 hacia servicios destino)**:
+  - Un 401 ya no se traduce en un `ChatResult` de 200 con un reply amable
+    ("sessionExpiredResult" se eliminó): `ChatLoopRunner.run()` y
+    `confirmPendingAction()` ahora **relanzan** `UpstreamSessionExpiredException`
+    en vez de atraparla, y `ApiExceptionHandler` la traduce a 401 con
+    `{"error":"TOKEN_EXPIRED","message":...}`. El mensaje ya viene armado por
+    `ChatLoopRunner` listo para el frontend — el handler solo lo relaya.
+  - **"Si eran varios pasos, decir cuáles se completaron"** solo aplica de verdad
+    en `confirmPendingAction`: es el único punto donde una escritura puede haber
+    tenido éxito (el tool ya se ejecutó) y recién *después* la sesión expira
+    (llamando a Gemini para redactar la respuesta final). En ese caso el mensaje
+    antepone `"Ya completé: <descripcion del tool>. "` antes del texto genérico.
+    Si el 401 viene de la ejecución del tool en sí (la escritura nunca ocurrió) o
+    del loop normal de `run()` (que etapa 3 solo ejecuta tools de solo lectura sin
+    confirmación), no hay nada que reportar como completado.
+  - **403 en los 3 adapters de servicios destino** (`PetServiceAdapter`,
+    `MedicalServiceAdapter`, `CalendarServiceAdapter`): rama explícita nueva,
+    separada del resto de 4xx/5xx genéricos, con mensaje `"No tienes permiso para
+    hacer eso."` — antes caía en el mensaje genérico de cada adapter
+    ("No se pudo verificar la mascota.", etc.), que no le daba al modelo la pista
+    de que era un problema de permisos y no un error transitorio. 404/400/409
+    seguían yendo al modelo igual que antes — nada que cambiar ahí.
+  - Tests nuevos de 403 en los 3 `*AdapterTest`, de 401→`TOKEN_EXPIRED` en
+    `ActionsControllerTest`, y de ambos escenarios de "completado"/"no completado"
+    en `ChatLoopRunnerTest`.
+  - **Parte B, reportada y sin tocar URLs a propósito**: las 3 rutas existen en el
+    gateway (`ApiGateway/api-gateway/.../application.yaml`) —
+    `pet-service` (`Path=/api/pets/**`, con `RewritePath` que quita `/api`: el
+    servicio ve `/pets/**`), `medical-pet-service` (`Path=/api/vaccines/**` entre
+    otros, **sin** `RewritePath`: ve la ruta tal cual, `/api/vaccines`) y
+    `calendar-service` (`Path=/api/calendar-events/**`, tampoco reescribe: ve
+    `/api/calendar-events`). Para medical/calendar, `MedicalServiceAdapter`/
+    `CalendarServiceAdapter` ya llaman exactamente a esas rutas con `/api/...`, así
+    que apuntarlas al gateway sería solo cambiar la base URL. Para pet-service,
+    `PetServiceAdapter` llama hoy sin el prefijo `/api` (`/pets/...`); enrutarlo por
+    el gateway sí exigiría agregarlo. Sigue sin implementarse — falta decidir
+    cuándo.
 
 ## Estado actual
 
@@ -412,6 +522,10 @@ el modelo alucina un `petId` ajeno, `pet-service` responde 403 y ese 403 vuelve 
 - [x] **Etapa 3** — `AiTool`, registry, executor, loop con guard de 5 iteraciones,
       los 4 tools (incluidos los que escriben con confirmación) y
       `POST /api/ai/actions/{id}/confirm|reject` → F3, F4.
+- [ ] Etapa 3.5 — migración de autenticación a RS256 + JWKS. Partes A (validación,
+      probada con token real) y C (401/403 hacia servicios destino) listas. Falta
+      la parte B (apuntar los adapters al gateway) — las 3 rutas existen, reportado
+      en el checkpoint, pero no se cambió ninguna URL todavía.
 - [ ] Etapa 4 — structured output para documentos → F5
 - [ ] Etapa 5 — suscripciones push y sugerencias de cuidado → F6
 - [ ] Etapa 6 — integración con MyAnimaLogVet

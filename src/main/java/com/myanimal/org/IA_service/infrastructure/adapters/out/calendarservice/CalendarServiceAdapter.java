@@ -55,6 +55,10 @@ public class CalendarServiceAdapter implements CalendarServicePort {
             if (ex.getStatusCode().value() == 401) {
                 throw new UpstreamSessionExpiredException("La sesión expiró al llamar a calendar-service.", ex);
             }
+            if (ex.getStatusCode().value() == 403) {
+                log.warn("calendar-service respondió 403 al agendar una cita: {}", ex.getResponseBodyAsString());
+                throw new ToolExecutionException("No tienes permiso para hacer eso.");
+            }
             log.warn("calendar-service respondió {} al agendar una cita: {}",
                     ex.getStatusCode().value(), ex.getResponseBodyAsString());
             throw new ToolExecutionException("No se pudo agendar la cita. Revisa los datos e intenta de nuevo.");

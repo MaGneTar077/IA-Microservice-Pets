@@ -119,6 +119,16 @@ class MedicalServiceAdapterTest {
     }
 
     @Test
+    void un403LanzaToolExecutionExceptionConMensajeDePermiso() {
+        Queue<Object> responses = new ConcurrentLinkedQueue<>(List.of(status(HttpStatus.FORBIDDEN)));
+        MedicalServiceAdapter adapter = buildAdapter(responses);
+
+        assertThatThrownBy(() -> adapter.registerVaccine(sampleRecord(), "jwt"))
+                .isInstanceOf(ToolExecutionException.class)
+                .hasMessageContaining("permiso");
+    }
+
+    @Test
     void unTimeoutSePropagaSinConvertirseEnUnaExcepcionDeNegocio() {
         WebClientRequestException timeout = new WebClientRequestException(
                 ReadTimeoutException.INSTANCE, HttpMethod.POST,

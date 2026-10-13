@@ -22,8 +22,12 @@ gemini:
 
 security:
   jwt:
-    secret: test-secret-0123456789abcdef0123456789
-    user-id-claim: id
+    # Nunca se llama de verdad: IaServiceApplicationTests arranca el contexto completo pero
+    # no ejercita ningún endpoint autenticado, y todos los @WebMvcTest mockean JwtDecoder en
+    # vez de importar este bean. Si algo alguna vez lo llamara de verdad, que falle fuerte.
+    jwks-uri: http://jwks.invalid/.well-known/jwks.json
+    issuer: myanimalog-user-service
+    audience: myanimalog-api
 
 supabase:
   url: http://supabase.test

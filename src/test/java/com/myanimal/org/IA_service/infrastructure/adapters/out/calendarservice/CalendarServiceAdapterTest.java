@@ -117,6 +117,16 @@ class CalendarServiceAdapterTest {
     }
 
     @Test
+    void un403LanzaToolExecutionExceptionConMensajeDePermiso() {
+        Queue<Object> responses = new ConcurrentLinkedQueue<>(List.of(status(HttpStatus.FORBIDDEN)));
+        CalendarServiceAdapter adapter = buildAdapter(responses);
+
+        assertThatThrownBy(() -> adapter.createEvent(sampleRecord(), "jwt"))
+                .isInstanceOf(ToolExecutionException.class)
+                .hasMessageContaining("permiso");
+    }
+
+    @Test
     void unTimeoutSePropagaSinConvertirseEnUnaExcepcionDeNegocio() {
         WebClientRequestException timeout = new WebClientRequestException(
                 ReadTimeoutException.INSTANCE, HttpMethod.POST,

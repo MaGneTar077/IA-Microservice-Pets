@@ -85,8 +85,9 @@ gemini:
 
 security:
   jwt:
-    secret: ${JWT_SECRET}
-    user-id-claim: ${JWT_USER_ID_CLAIM:id}
+    jwks-uri: ${JWT_JWKS_URI}
+    issuer: ${JWT_ISSUER:myanimalog-user-service}
+    audience: ${JWT_AUDIENCE:myanimalog-api}
 
 supabase:
   url: ${SUPABASE_URL}

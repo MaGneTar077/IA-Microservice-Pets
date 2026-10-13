@@ -12,6 +12,7 @@ import lombok.Setter;
 @ConfigurationProperties(prefix = "security.jwt")
 public class JwtProperties {
 
-    private String secret;
-    private String userIdClaim;
+    private String jwksUri;
+    private String issuer;
+    private String audience;
 }
