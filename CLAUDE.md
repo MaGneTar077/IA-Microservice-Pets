@@ -512,6 +512,149 @@ el modelo alucina un `petId` ajeno, `pet-service` responde 403 y ese 403 vuelve 
     el gateway sí exigiría agregarlo. Sigue sin implementarse — falta decidir
     cuándo.
 
+- **Etapa 4, partes A y B + endpoint mínimo de C (checkpoint, structured output sin persistencia)**:
+  - **No toca function calling ni escribe en medical-service, a propósito** (ver "Regla
+    número uno"): `POST /api/ai/documents/analyze` extrae con structured output de Gemini
+    y devuelve el DTO; el móvil pinta el formulario y es el móvil el que hace el POST a
+    medical-service. `DocumentAnalysisService` no tiene ninguna dependencia hacia
+    `MedicalServicePort`/`CalendarServicePort` — no por omisión, sino porque no hay forma
+    de que este flujo escriba nada si ni siquiera están inyectados.
+  - `AiRequest` ganó `responseMimeType`/`responseSchema` (`Map<String, Object>`), sin
+    romper la firma de `AiModelPort.generate(...)`. `GeminiAdapter.toGeminiRequest`
+    construye `generationConfig` solo si alguno de los dos viene no nulo — los reintentos,
+    el fallback de modelo y el manejo de timeouts de la etapa 1 siguen exactamente igual,
+    porque son independientes del payload.
+  - **La limpieza del fence de markdown vive en `GeminiAdapter.extractText`, no en
+    `DocumentAnalysisService`** (es un detalle de la API de Gemini, no del dominio de
+    documentos): solo se limpia cuando el texto ENTERO de la respuesta es un único bloque
+    ` ```json ... ``` ` — no un fragmento dentro de una respuesta de chat normal que
+    incluya código real. Aplica a cualquier llamada a Gemini, no solo a documentos, pero
+    es inofensivo para el chat porque esa respuesta nunca es *solo* un bloque de código.
+  - **El reintento por JSON que no cumple el esquema vive en `DocumentAnalysisService`,
+    no en `GeminiAdapter`** (decisión explícita, no implícita): "cumplir el esquema"
+    significa "deserializa en `DocumentExtractionDto`" vía Jackson — no hay una segunda
+    validación de negocio sobre el `required` del JSON Schema. Un solo reintento, mismo
+    `AiRequest` (mismo prompt, sin backoff); si el segundo intento tampoco parsea,
+    `DocumentAnalysisFailedException` (502). El texto crudo se loguea en DEBUG antes de
+    reintentar, nunca en INFO/WARN.
+  - `medical-document.json` (`src/main/resources/schemas/medical-document.json`) usa
+    JSON Schema estándar en minúsculas (`"type": "object"`), **no** la convención en
+    MAYÚSCULAS de `AiTool.declaration()` (`"OBJECT"`, `"STRING"`) — son dos dialectos
+    distintos de la API de Gemini (`responseSchema` de `generationConfig` vs.
+    `functionDeclarations` de `tools`), y aquí no hay tools de por medio. No lo traduzcas
+    a mayúsculas si lo tocas.
+  - `DocumentType` (`domain.model`, enum `EXAM/TREATMENT/SURGERY/UNKNOWN`) y
+    `DocumentExtractionDto` + 5 DTOs anidados (`ExamenDataDto`, `ResultadoExamenDto`,
+    `TratamientoDataDto`, `MedicamentoDto`, `CirugiaDataDto`, todos en
+    `application.dto`) son el mapeo 1:1 del schema. `documentType`/`confianzaGeneral`
+    y los demás campos de texto (`textoOriginal`, `camposIlegibles`, etc.) se devuelven
+    tal cual los manda el modelo, sin filtrar ni recortar.
+  - **Verificación de propiedad de `petId` (opcional) fuera de un tool**: primera vez que
+    algo llama a `PetServicePort.getPet(...)` sin pasar por `ToolExecutor`. Como
+    `getPet` traduce 403/404 a `ToolExecutionException` (pensado para que el modelo lo
+    lea, etapa 3), `DocumentAnalysisService.verifyPetOwnership` la atrapa y la traduce a
+    `PetNotFoundException` (404) — mismo principio que en los tools: petId inexistente y
+    petId de otro dueño dan el mismo 404, nunca un 403 que confirme que el id existe. Un
+    401 (`UpstreamSessionExpiredException`) no se atrapa aquí: se deja propagar igual que
+    en el resto del servicio, hacia el 401 `TOKEN_EXPIRED` ya existente.
+  - **`DocumentFileValidator` (nuevo, `infrastructure.adapters.in.attachment`) en vez de
+    reusar `AttachmentProcessor`**: este endpoint recibe un único archivo (`file`, no
+    `files[]`), así que la lógica de "máximo N archivos" / "máximo de bytes **total** del
+    lote" de `AttachmentProcessor` (atada a `uploads.*`) no aplica. `DocumentFileValidator`
+    tiene su propia config (`documents.max-file-size-bytes`, prefijo `documents`, nuevo
+    `DocumentsProperties`) y su propia lista blanca: PDF + imágenes de la lista blanca de
+    la etapa 2, **sin audio** (a diferencia del chat). Sí reusa `MagicByteMimeDetector`
+    tal cual — esa clase es pura y no depende de `uploads.*`.
+  - `DocumentsProperties` también trae `schema-path`/`prompt-path`
+    (`classpath:schemas/medical-document.json`, `classpath:prompts/document-extraction-
+    prompt.txt`) para poder iterar el schema/prompt sin recompilar, cargados una vez al
+    arrancar por `DocumentExtractionConfig` (mismo patrón bean-factory que
+    `SystemPromptConfig`, pero parametrizado por esas dos properties en vez de un
+    classpath hardcoded).
+  - **Deliberadamente NO implementado en esta parada** (el brief pide detenerse aquí para
+    validar la calidad de la extracción con documentos reales antes de construir el
+    resto): no se sube el documento a Supabase Storage, no existe la tabla
+    `ai_document_analysis` ni su SQL en `db/schema.sql`, no existe
+    `GET /api/ai/documents/{analysisId}`, y el endpoint no deja rastro en el chat (parte C4
+    del brief pide avisar antes de tocar eso, no se tocó).
+  - Excepciones nuevas: `PetNotFoundException` (404, `PET_NOT_FOUND`) y
+    `DocumentAnalysisFailedException` (502, `DOCUMENT_ANALYSIS_FAILED`), con sus
+    `@ExceptionHandler` en `ApiExceptionHandler`, mismo patrón que el resto (la excepción
+    es trivial, la traducción a HTTP vive 100% en el handler).
+  - Tests nuevos: `GeminiAdapterTest` (payload con `generationConfig`, `generationConfig`
+    nulo sin `responseSchema`, limpieza del fence de markdown), `DocumentAnalysisServiceTest`
+    (examen/tratamiento/cirugía/`UNKNOWN`, reintento por JSON inválido con éxito y con
+    fallo tras el segundo intento, `petId` ajeno/inexistente nunca llega a llamar a
+    Gemini) y `DocumentsControllerTest` (PDF, imagen, con `petId`, `petId` ajeno → 404,
+    sin archivo → 400, MIME no permitido → 415, demasiados bytes → 413, sin token → 401).
+    `./mvnw test` pasa completo (141 tests, 142 tras el fix de abajo) sin variables de
+    entorno reales.
+  - **Fix tras probar con un uroanálisis real (3 problemas)**:
+    1. El modelo metía todos los parámetros (Aspecto, Densidad, pH, ...) como un párrafo
+       de texto dentro de `examen.tipoExamen`, dejando `resultados` vacío — inutiliza el
+       formulario, que necesita una fila editable por parámetro. Fix: `tipoExamen` y la
+       descripción de `resultados` en `medical-document.json` ahora dicen explícitamente
+       que `tipoExamen` es SOLO el nombre del examen y que cada parámetro va como un
+       objeto separado en `resultados`, y el prompt (`document-extraction-prompt.txt`)
+       lo repite con un ejemplo completo de la estructura esperada (un examen con 3
+       parámetros, uno con rango, uno sin rango, uno vacío). `resultados[].parametro` y
+       `medicamentos[].nombre` ahora son `required` a nivel de item — todo lo demás del
+       item es opcional.
+    2. Campos sin dato venían como el string `"null"` (`"diagnostico": "null"`), no como
+       `null` real — porque con `"type": "string"` sin `"nullable": true` el modelo no
+       tiene otra forma válida de decir "no hay valor" que inventar ese texto. Fix de
+       raíz: casi todos los campos opcionales del schema ganaron `"nullable": true`
+       (Gemini soporta ese subset de OpenAPI 3.0), y el prompt ahora dice "OMITE el campo"
+       en vez de "déjalo null". Defensa en profundidad en código: `DocumentAnalysisService
+       .sanitizeLiteralNullStrings` recorre el árbol de Jackson (`JsonNode`) antes de
+       mapear a `DocumentExtractionDto` y convierte cualquier string literal `"null"`
+       (case-insensitive, con trim) a un `NullNode` real — no depende de que el modelo
+       respete `nullable` siempre. No se tocó el `ObjectMapper` compartido (bean de
+       Spring): la sanitización opera sobre el árbol ya leído, no sobre deserialización
+       global, así que no afecta a ningún otro flujo del servicio.
+    3. **Decisión de diseño — "vacío" vs. "ilegible" en `examen.resultados`**: ambos casos
+       se representan con `resultados[i].valor: null`. Lo que los distingue es si el
+       `parametro` aparece además en el `camposIlegibles` de nivel superior: si NO
+       aparece ahí, la casilla estaba simplemente vacía en el documento (el veterinario
+       no la llenó); si SÍ aparece, había algo escrito pero no se pudo leer con claridad.
+       `camposIlegibles` deja de ser "cualquier campo dudoso" y pasa a significar
+       específicamente "tenía un valor pero era ilegible" — nunca se usa para marcar una
+       ausencia de dato. El prompt y la `description` de `camposIlegibles` en el schema
+       lo dicen con esas palabras exactas para que el modelo no mezcle los dos casos.
+  - **`MAX_TOKENS` ya no es un éxito silencioso (afecta a TODO el servicio, no solo a
+    documentos)**. El fix de arriba hizo que la respuesta del uroanálisis se truncara: el
+    modelo volcó su razonamiento dentro del campo `veterinario` y el JSON se cortó antes de
+    `examen`/`resultados`/`textoOriginal`. No se detectó porque:
+    `MAX_TOKENS` no estaba en `BLOCKED_FINISH_REASONS`, `finishReason` se guardaba en
+    `AiResponse` y **nadie lo leía ni lo logueaba** (cero call sites de
+    `getFinishReason()`), y el reintento de `DocumentAnalysisService` solo dispara con una
+    excepción de Jackson — un JSON truncado pero sintácticamente válido parsea y sale como
+    200 con la mitad de los campos en `null`.
+    - `finishReason` ahora va en la línea de log de **cada** llamada, y el log se emite
+      **antes** de cualquier `throw` (bloqueo o truncamiento): es justo cuando hacen falta
+      los tokens para diagnosticar.
+    - `finishReason == MAX_TOKENS` → `AiResponseTruncatedException` → 502
+      `MODEL_RESPONSE_TRUNCATED`. **No es `GeminiRetryableException` a propósito**: el mismo
+      prompt con el mismo límite se corta igual, así que no se reintenta ni se cae al modelo
+      de fallback (eso solo gastaría cuota y latencia para obtener el mismo corte). Los
+      reintentos siguen siendo exclusivamente para fallas de transporte (503/429/timeout).
+    - **Extiende `AiModelException` a propósito**: `ChatLoopRunner:235` ya atrapa esa familia
+      alrededor de la redacción de la respuesta final de una pending action, así que un
+      truncamiento justo después de ejecutar un tool sigue cayendo en el reply local en vez
+      de salir como error HTTP con la escritura ya hecha (la red de seguridad de la etapa 3
+      parte E sigue intacta sin tocar `ChatLoopRunner`).
+    - Efecto en el chat, revisado: antes una respuesta larga se cortaba a media frase y se
+      devolvía como buena; ahora falla fuerte. Y si el corte ocurre en medio de un
+      `functionCall`, ya no se ejecuta un tool con args truncados — relevante para los tools
+      que escriben.
+  - **`gemini.max-output-tokens` (`GEMINI_MAX_OUTPUT_TOKENS`, default 32768) explícito en
+    todas las llamadas.** Antes no se mandaba `maxOutputTokens` y se heredaba el default del
+    modelo. Es un **techo, no un objetivo**: no alarga las respuestas del chat, solo las
+    permite. Ojo: en los modelos que razonan los tokens de pensamiento salen de este mismo
+    presupuesto (se ven como `thoughtsTokens` en el log), así que el techo tiene que cubrir
+    razonamiento + JSON visible. Si Gemini responde 400 por exceder el máximo del modelo, se
+    baja la env var — no hace falta recompilar.
+
 ## Estado actual
 
 - [x] Repo, `pom.xml`, `.gitignore`, `README.md`, `application.yml`, `.env.example`
@@ -526,7 +669,12 @@ el modelo alucina un `petId` ajeno, `pet-service` responde 403 y ese 403 vuelve 
       probada con token real) y C (401/403 hacia servicios destino) listas. Falta
       la parte B (apuntar los adapters al gateway) — las 3 rutas existen, reportado
       en el checkpoint, pero no se cambió ninguna URL todavía.
-- [ ] Etapa 4 — structured output para documentos → F5
+- [ ] Etapa 4 — structured output para documentos → F5. Partes A y B listas (structured
+      output en `AiModelPort`/`GeminiAdapter`, schema y prompt de extracción) más un
+      endpoint mínimo de la parte C (`POST /api/ai/documents/analyze` sin persistencia).
+      Pendiente: Supabase Storage, tabla `ai_document_analysis`,
+      `GET /api/ai/documents/{analysisId}` — detenido a propósito para validar la
+      calidad de la extracción con documentos reales antes de seguir.
 - [ ] Etapa 5 — suscripciones push y sugerencias de cuidado → F6
 - [ ] Etapa 6 — integración con MyAnimaLogVet
 

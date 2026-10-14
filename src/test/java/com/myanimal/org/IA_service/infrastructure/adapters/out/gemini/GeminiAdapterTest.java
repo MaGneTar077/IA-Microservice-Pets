@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.Base64;
 import java.util.List;
+import java.util.Map;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -23,6 +24,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.myanimal.org.IA_service.domain.exception.AiContentBlockedException;
 import com.myanimal.org.IA_service.domain.exception.AiModelException;
 import com.myanimal.org.IA_service.domain.exception.AiModelUnavailableException;
+import com.myanimal.org.IA_service.domain.exception.AiResponseTruncatedException;
 import com.myanimal.org.IA_service.domain.model.AiMessage;
 import com.myanimal.org.IA_service.domain.model.AiPart;
 import com.myanimal.org.IA_service.domain.model.AiRequest;
@@ -76,6 +78,42 @@ class GeminiAdapterTest {
             {
               "candidates": [
                 { "content": { "role": "model", "parts": [] }, "finishReason": "SAFETY" }
+              ]
+            }
+            """;
+
+    /**
+     * Respuesta cortada por límite de tokens: el patrón real que se vio con un uroanálisis —
+     * el razonamiento se come el presupuesto (thoughtsTokens alto) y el JSON queda a medias.
+     */
+    private static final String MAX_TOKENS_BODY = """
+            {
+              "candidates": [
+                {
+                  "content": { "role": "model", "parts": [
+                    { "text": "{\\"documentType\\":\\"EXAM\\",\\"confianzaGeneral\\":\\"ALTA\\"}" }
+                  ]},
+                  "finishReason": "MAX_TOKENS"
+                }
+              ],
+              "usageMetadata": {
+                "promptTokenCount": 1200,
+                "candidatesTokenCount": 900,
+                "thoughtsTokenCount": 8000,
+                "totalTokenCount": 10100
+              }
+            }
+            """;
+
+    private static final String JSON_WRAPPED_IN_MARKDOWN_FENCE_BODY = """
+            {
+              "candidates": [
+                {
+                  "content": { "role": "model", "parts": [
+                    { "text": "```json\\n{\\"documentType\\":\\"UNKNOWN\\"}\\n```" }
+                  ]},
+                  "finishReason": "STOP"
+                }
               ]
             }
             """;
@@ -230,6 +268,120 @@ class GeminiAdapterTest {
         assertThatThrownBy(() -> adapter.generate(sampleRequest()))
                 .isInstanceOf(AiModelException.class);
         assertThat(callCount.get()).isEqualTo(1);
+    }
+
+    @Test
+    void generationConfigLlegaConResponseMimeTypeYResponseSchemaCuandoSeSolicitan() {
+        GeminiAdapter adapter = new GeminiAdapter(
+                WebClient.builder().baseUrl("http://gemini.test").build(), defaultProperties(), new ObjectMapper());
+        Map<String, Object> schema = Map.of("type", "object", "properties", Map.of("documentType", Map.of("type", "string")));
+
+        AiRequest request = AiRequest.builder()
+                .systemInstruction("extrae")
+                .messages(List.of(AiMessage.builder()
+                        .role(AiRole.USER)
+                        .parts(List.of(AiPart.ofBinary("application/pdf", new byte[] { 1, 2, 3 })))
+                        .build()))
+                .responseMimeType("application/json")
+                .responseSchema(schema)
+                .build();
+
+        var geminiRequest = adapter.toGeminiRequest(request);
+
+        assertThat(geminiRequest.getGenerationConfig()).isNotNull();
+        assertThat(geminiRequest.getGenerationConfig().getResponseMimeType()).isEqualTo("application/json");
+        assertThat(geminiRequest.getGenerationConfig().getResponseSchema()).isEqualTo(schema);
+    }
+
+    @Test
+    void maxOutputTokensViajaSiempreAunqueNoSeSoliciteResponseSchema() {
+        GeminiProperties properties = defaultProperties();
+        properties.setMaxOutputTokens(12345);
+        GeminiAdapter adapter = new GeminiAdapter(
+                WebClient.builder().baseUrl("http://gemini.test").build(), properties, new ObjectMapper());
+
+        var geminiRequest = adapter.toGeminiRequest(sampleRequest());
+
+        assertThat(geminiRequest.getGenerationConfig()).isNotNull();
+        assertThat(geminiRequest.getGenerationConfig().getMaxOutputTokens()).isEqualTo(12345);
+        assertThat(geminiRequest.getGenerationConfig().getResponseMimeType()).isNull();
+        assertThat(geminiRequest.getGenerationConfig().getResponseSchema()).isNull();
+    }
+
+    @Test
+    void finishReasonMaxTokensLanzaTruncadaSinReintentarNiUsarFallback() {
+        Queue<Object> responses = new ConcurrentLinkedQueue<>(List.of(
+                ok(MAX_TOKENS_BODY),
+                ok(OK_BODY)));
+        GeminiAdapter adapter = buildAdapter(defaultProperties(), responses);
+
+        assertThatThrownBy(() -> adapter.generate(sampleRequest()))
+                .isInstanceOf(AiResponseTruncatedException.class);
+        // Una sola llamada: no se reintenta ni se cae al fallback, porque el mismo prompt
+        // con el mismo límite se cortaría igual.
+        assertThat(callCount.get()).isEqualTo(1);
+    }
+
+    @Test
+    void truncadaEsUnAiModelExceptionParaQueChatLoopRunnerLaSigaAtrapando() {
+        Queue<Object> responses = new ConcurrentLinkedQueue<>(List.of(ok(MAX_TOKENS_BODY)));
+        GeminiAdapter adapter = buildAdapter(defaultProperties(), responses);
+
+        assertThatThrownBy(() -> adapter.generate(sampleRequest()))
+                .isInstanceOf(AiModelException.class);
+    }
+
+    @Test
+    void logueaFinishReasonYLosTokensAntesDeFallarPorTruncamiento() {
+        Logger logger = (Logger) LoggerFactory.getLogger(GeminiAdapter.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+
+        Queue<Object> responses = new ConcurrentLinkedQueue<>(List.of(ok(MAX_TOKENS_BODY)));
+        GeminiAdapter adapter = buildAdapter(defaultProperties(), responses);
+
+        try {
+            assertThatThrownBy(() -> adapter.generate(sampleRequest()))
+                    .isInstanceOf(AiResponseTruncatedException.class);
+
+            assertThat(appender.list).anyMatch(event -> event.getLevel() == Level.INFO
+                    && event.getFormattedMessage().contains("finishReason=MAX_TOKENS")
+                    && event.getFormattedMessage().contains("outputTokens=900")
+                    && event.getFormattedMessage().contains("thoughtsTokens=8000"));
+        } finally {
+            logger.detachAppender(appender);
+        }
+    }
+
+    @Test
+    void logueaFinishReasonEnUnaLlamadaNormal() {
+        Logger logger = (Logger) LoggerFactory.getLogger(GeminiAdapter.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+
+        Queue<Object> responses = new ConcurrentLinkedQueue<>(List.of(ok(OK_BODY)));
+        GeminiAdapter adapter = buildAdapter(defaultProperties(), responses);
+
+        try {
+            adapter.generate(sampleRequest());
+
+            assertThat(appender.list).anyMatch(event -> event.getLevel() == Level.INFO
+                    && event.getFormattedMessage().contains("finishReason=STOP"));
+        } finally {
+            logger.detachAppender(appender);
+        }
+    }
+
+    @Test
+    void jsonEnvueltoEnFenceDeMarkdownSeLimpiaAntesDeDevolverElTexto() {
+        Queue<Object> responses = new ConcurrentLinkedQueue<>(List.of(ok(JSON_WRAPPED_IN_MARKDOWN_FENCE_BODY)));
+        GeminiAdapter adapter = buildAdapter(defaultProperties(), responses);
+
+        AiResponse response = adapter.generate(sampleRequest());
+
+        assertThat(response.getText()).isEqualTo("{\"documentType\":\"UNKNOWN\"}");
     }
 
     @Test

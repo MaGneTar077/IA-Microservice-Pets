@@ -10,10 +10,13 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import com.myanimal.org.IA_service.domain.exception.AiContentBlockedException;
 import com.myanimal.org.IA_service.domain.exception.AiModelException;
 import com.myanimal.org.IA_service.domain.exception.AiModelUnavailableException;
+import com.myanimal.org.IA_service.domain.exception.AiResponseTruncatedException;
 import com.myanimal.org.IA_service.domain.exception.AttachmentStorageException;
 import com.myanimal.org.IA_service.domain.exception.AttachmentsTooLargeException;
 import com.myanimal.org.IA_service.domain.exception.ConversationNotFoundException;
+import com.myanimal.org.IA_service.domain.exception.DocumentAnalysisFailedException;
 import com.myanimal.org.IA_service.domain.exception.InvalidChatRequestException;
+import com.myanimal.org.IA_service.domain.exception.PetNotFoundException;
 import com.myanimal.org.IA_service.domain.exception.PendingActionExpiredException;
 import com.myanimal.org.IA_service.domain.exception.PendingActionNotFoundException;
 import com.myanimal.org.IA_service.domain.exception.TooManyAttachmentsException;
@@ -33,6 +36,19 @@ public class ApiExceptionHandler {
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                 .body(new ErrorResponse("MODEL_UNAVAILABLE",
                         "El asistente no está disponible en este momento. Intenta de nuevo más tarde."));
+    }
+
+    /**
+     * Más específico que el handler de AiModelException (del que hereda), así que Spring
+     * elige este: el frontend necesita distinguir "se cortó por tamaño" de "el modelo falló",
+     * porque lo primero se arregla con un documento más corto, no reintentando.
+     */
+    @ExceptionHandler(AiResponseTruncatedException.class)
+    public ResponseEntity<ErrorResponse> handleTruncated(AiResponseTruncatedException ex) {
+        log.error("La respuesta del modelo se cortó por límite de tokens", ex);
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                .body(new ErrorResponse("MODEL_RESPONSE_TRUNCATED",
+                        "La respuesta no cupo en el límite de tokens. Intenta con un documento más corto."));
     }
 
     @ExceptionHandler(AiModelException.class)
@@ -101,6 +117,20 @@ public class ApiExceptionHandler {
         log.warn("Sesión expirada llamando a un servicio destino: {}", ex.getMessage());
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                 .body(new ErrorResponse("TOKEN_EXPIRED", ex.getMessage()));
+    }
+
+    @ExceptionHandler(PetNotFoundException.class)
+    public ResponseEntity<ErrorResponse> handlePetNotFound(PetNotFoundException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(new ErrorResponse("PET_NOT_FOUND", "La mascota no existe o no pertenece al usuario."));
+    }
+
+    @ExceptionHandler(DocumentAnalysisFailedException.class)
+    public ResponseEntity<ErrorResponse> handleDocumentAnalysisFailed(DocumentAnalysisFailedException ex) {
+        log.error("No se pudo analizar el documento", ex);
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                .body(new ErrorResponse("DOCUMENT_ANALYSIS_FAILED",
+                        "No se pudo analizar el documento. Intenta de nuevo."));
     }
 
     @ExceptionHandler(InvalidChatRequestException.class)

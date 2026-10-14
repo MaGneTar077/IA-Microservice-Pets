@@ -5,6 +5,8 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.TimeoutException;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import org.springframework.http.HttpStatusCode;
@@ -19,6 +21,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.myanimal.org.IA_service.domain.exception.AiContentBlockedException;
 import com.myanimal.org.IA_service.domain.exception.AiModelException;
 import com.myanimal.org.IA_service.domain.exception.AiModelUnavailableException;
+import com.myanimal.org.IA_service.domain.exception.AiResponseTruncatedException;
 import com.myanimal.org.IA_service.domain.model.AiFunctionCall;
 import com.myanimal.org.IA_service.domain.model.AiMessage;
 import com.myanimal.org.IA_service.domain.model.AiPart;
@@ -34,6 +37,7 @@ import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.Gemini
 import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiFunctionResponse;
 import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiGenerateRequest;
 import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiGenerateResponse;
+import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiGenerationConfig;
 import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiInlineData;
 import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiPart;
 import com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto.GeminiResponsePart;
@@ -51,6 +55,14 @@ public class GeminiAdapter implements AiModelPort {
 
     private static final Set<String> BLOCKED_FINISH_REASONS = Set.of(
             "SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII");
+
+    private static final String TRUNCATED_FINISH_REASON = "MAX_TOKENS";
+
+    // Con responseMimeType: application/json, algunos modelos igual envuelven el texto en un
+    // bloque de código markdown. Solo se limpia cuando la respuesta ENTERA es un único bloque
+    // (no un fragmento dentro de una respuesta de chat normal que incluya código de verdad).
+    private static final Pattern MARKDOWN_FENCE_PATTERN =
+            Pattern.compile("^```(?:json)?\\s*\\n?(.*?)\\n?```$", Pattern.DOTALL);
 
     private final WebClient geminiWebClient;
     private final GeminiProperties properties;
@@ -183,19 +195,31 @@ public class GeminiAdapter implements AiModelPort {
 
         GeminiCandidate candidate = candidates.get(0);
         String finishReason = candidate.getFinishReason();
-        if (finishReason != null && BLOCKED_FINISH_REASONS.contains(finishReason)) {
-            throw new AiContentBlockedException("La respuesta fue bloqueada por los filtros de seguridad.");
-        }
-
         String text = extractText(candidate);
         List<AiFunctionCall> functionCalls = extractFunctionCalls(candidate);
         AiUsage usage = extractUsage(response.getUsageMetadata());
         long latencyMs = System.currentTimeMillis() - startedAt;
 
-        log.info("Llamada a Gemini: modelo={} latenciaMs={} intento={} promptTokens={} outputTokens={} "
-                        + "thoughtsTokens={} totalTokens={} functionCalls={}",
-                modelUsed, latencyMs, attempt, usage.getPromptTokens(), usage.getOutputTokens(),
+        // El log va ANTES de cualquier throw: cuando la respuesta se corta o se bloquea es
+        // justo cuando hacen falta el finishReason y los tokens para diagnosticar.
+        log.info("Llamada a Gemini: modelo={} latenciaMs={} intento={} finishReason={} promptTokens={} "
+                        + "outputTokens={} thoughtsTokens={} totalTokens={} functionCalls={}",
+                modelUsed, latencyMs, attempt, finishReason, usage.getPromptTokens(), usage.getOutputTokens(),
                 usage.getThoughtsTokens(), usage.getTotalTokens(), functionCalls.size());
+
+        if (finishReason != null && BLOCKED_FINISH_REASONS.contains(finishReason)) {
+            throw new AiContentBlockedException("La respuesta fue bloqueada por los filtros de seguridad.");
+        }
+
+        // Una respuesta truncada ya no es un éxito silencioso. NO se lanza como
+        // GeminiRetryableException a propósito: el mismo prompt con el mismo límite se corta
+        // igual, así que no se reintenta ni se cae al modelo de fallback — falla de una.
+        if (TRUNCATED_FINISH_REASON.equals(finishReason)) {
+            log.warn("Gemini cortó la respuesta por límite de tokens: modelo={} outputTokens={} "
+                            + "thoughtsTokens={} maxOutputTokens={}",
+                    modelUsed, usage.getOutputTokens(), usage.getThoughtsTokens(), properties.getMaxOutputTokens());
+            throw new AiResponseTruncatedException("La respuesta del modelo se cortó por límite de tokens.");
+        }
 
         return AiResponse.builder()
                 .text(text)
@@ -210,11 +234,20 @@ public class GeminiAdapter implements AiModelPort {
         if (candidate.getContent() == null || candidate.getContent().getParts() == null) {
             return "";
         }
-        return candidate.getContent().getParts().stream()
+        String text = candidate.getContent().getParts().stream()
                 .filter(part -> !Boolean.TRUE.equals(part.getThought()))
                 .map(GeminiResponsePart::getText)
                 .filter(Objects::nonNull)
                 .collect(Collectors.joining());
+        return stripMarkdownFence(text);
+    }
+
+    private String stripMarkdownFence(String text) {
+        if (text == null || text.isBlank()) {
+            return text;
+        }
+        Matcher matcher = MARKDOWN_FENCE_PATTERN.matcher(text.strip());
+        return matcher.matches() ? matcher.group(1).strip() : text;
     }
 
     private List<AiFunctionCall> extractFunctionCalls(GeminiCandidate candidate) {
@@ -256,10 +289,20 @@ public class GeminiAdapter implements AiModelPort {
                 ? null
                 : List.of(GeminiTool.builder().functionDeclarations(request.getTools()).build());
 
+        // maxOutputTokens va explícito en TODAS las llamadas, no solo en las de documentos:
+        // sin él se hereda el default del modelo y una respuesta larga se corta en silencio.
+        // Es un techo, no un objetivo — no alarga las respuestas del chat, solo las permite.
+        GeminiGenerationConfig generationConfig = GeminiGenerationConfig.builder()
+                .maxOutputTokens(properties.getMaxOutputTokens())
+                .responseMimeType(request.getResponseMimeType())
+                .responseSchema(request.getResponseSchema())
+                .build();
+
         return GeminiGenerateRequest.builder()
                 .systemInstruction(systemInstruction)
                 .contents(contents)
                 .tools(tools)
+                .generationConfig(generationConfig)
                 .build();
     }
 

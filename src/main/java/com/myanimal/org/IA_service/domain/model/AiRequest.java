@@ -17,4 +17,6 @@ public class AiRequest {
     private String systemInstruction;
     private List<AiMessage> messages;
     private List<Map<String, Object>> tools;
+    private String responseMimeType;
+    private Map<String, Object> responseSchema;
 }

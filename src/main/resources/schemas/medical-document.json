@@ -1,0 +1,105 @@
+{
+  "type": "object",
+  "properties": {
+    "documentType": { "type": "string", "enum": ["EXAM", "TREATMENT", "SURGERY", "UNKNOWN"] },
+    "confianzaGeneral": { "type": "string", "enum": ["ALTA", "MEDIA", "BAJA"] },
+    "fecha": {
+      "type": "string",
+      "nullable": true,
+      "description": "yyyy-MM-dd. Si no aparece una fecha en el documento, OMITE este campo (no escribas el texto \"null\")."
+    },
+    "veterinario": { "type": "string", "nullable": true },
+    "clinica": { "type": "string", "nullable": true },
+    "mascotaNombre": {
+      "type": "string",
+      "nullable": true,
+      "description": "el nombre de la mascota que aparece en el documento"
+    },
+    "diagnostico": { "type": "string", "nullable": true },
+    "observaciones": { "type": "string", "nullable": true },
+
+    "examen": {
+      "type": "object",
+      "nullable": true,
+      "description": "Solo para documentType EXAM. Null si el documento no es un examen.",
+      "properties": {
+        "tipoExamen": {
+          "type": "string",
+          "nullable": true,
+          "description": "SOLO el nombre del examen, ej. \"Uroanálisis\" o \"Hemograma completo\". NUNCA pongas aquí los parámetros ni sus valores: cada parámetro va como un objeto separado en resultados, uno por fila/casilla del documento."
+        },
+        "resultados": {
+          "type": "array",
+          "description": "Un objeto por cada parámetro que aparece en el documento (ej. Aspecto, Color, Densidad, pH, Proteínas, Glucosa, ...), incluso si su casilla de valor está vacía. NUNCA resumas los parámetros como texto corrido dentro de tipoExamen ni de ningún otro campo.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "parametro": {
+                "type": "string",
+                "description": "Nombre del parámetro medido tal como aparece en el documento, ej. \"Densidad\", \"pH\", \"Glucosa\"."
+              },
+              "valor": {
+                "type": "string",
+                "nullable": true,
+                "description": "El valor transcrito tal cual aparece. null si la casilla está vacía en el documento (no se llenó) o si se escribió algo pero no se puede leer con claridad (en ese segundo caso, agrega también el parámetro a camposIlegibles)."
+              },
+              "unidad": { "type": "string", "nullable": true },
+              "rangoReferencia": { "type": "string", "nullable": true },
+              "fueraDeRango": {
+                "type": "boolean",
+                "nullable": true,
+                "description": "true/false solo si el documento lo indica o se puede determinar comparando contra rangoReferencia; null si no aplica o no se puede determinar."
+              }
+            },
+            "required": ["parametro"]
+          }
+        }
+      }
+    },
+
+    "tratamiento": {
+      "type": "object",
+      "nullable": true,
+      "description": "Solo para documentType TREATMENT. Null si el documento no es un tratamiento.",
+      "properties": {
+        "medicamentos": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "nombre": { "type": "string" },
+              "dosis": { "type": "string", "nullable": true },
+              "frecuencia": { "type": "string", "nullable": true },
+              "duracion": { "type": "string", "nullable": true },
+              "via": { "type": "string", "nullable": true }
+            },
+            "required": ["nombre"]
+          }
+        },
+        "indicaciones": { "type": "string", "nullable": true }
+      }
+    },
+
+    "cirugia": {
+      "type": "object",
+      "nullable": true,
+      "description": "Solo para documentType SURGERY. Null si el documento no es una cirugía.",
+      "properties": {
+        "procedimiento": { "type": "string", "nullable": true },
+        "anestesia": { "type": "string", "nullable": true },
+        "complicaciones": { "type": "string", "nullable": true },
+        "cuidadosPostoperatorios": { "type": "string", "nullable": true },
+        "proximoControl": { "type": "string", "nullable": true }
+      }
+    },
+
+    "camposIlegibles": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Nombres de campos o parámetros que aparecían en el documento con un valor escrito pero que no se pudo leer con claridad (manchado, cortado, caligrafía ilegible). NO incluyas aquí un parámetro cuya casilla simplemente estaba vacía porque nunca se llenó — eso es una ausencia de dato, no un problema de lectura."
+    },
+
+    "textoOriginal": { "type": "string", "description": "el texto crudo extraído del documento" }
+  },
+  "required": ["documentType", "confianzaGeneral"]
+}
