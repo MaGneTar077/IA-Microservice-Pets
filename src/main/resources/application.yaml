@@ -79,6 +79,7 @@ gemini:
   timeout-seconds: ${GEMINI_TIMEOUT:20}
   max-retries: ${GEMINI_MAX_RETRIES:1}
   retry-backoff-ms: ${GEMINI_RETRY_BACKOFF_MS:1000}
+  max-output-tokens: ${GEMINI_MAX_OUTPUT_TOKENS:32768}
   max-tool-iterations: ${GEMINI_MAX_TOOL_ITERATIONS:5}
   max-history-messages: ${GEMINI_MAX_HISTORY:20}
   max-history-attachments: ${GEMINI_MAX_HISTORY_ATTACHMENTS:2}

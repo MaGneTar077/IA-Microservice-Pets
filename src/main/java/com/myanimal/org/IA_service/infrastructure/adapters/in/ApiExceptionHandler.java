@@ -10,6 +10,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import com.myanimal.org.IA_service.domain.exception.AiContentBlockedException;
 import com.myanimal.org.IA_service.domain.exception.AiModelException;
 import com.myanimal.org.IA_service.domain.exception.AiModelUnavailableException;
+import com.myanimal.org.IA_service.domain.exception.AiResponseTruncatedException;
 import com.myanimal.org.IA_service.domain.exception.AttachmentStorageException;
 import com.myanimal.org.IA_service.domain.exception.AttachmentsTooLargeException;
 import com.myanimal.org.IA_service.domain.exception.ConversationNotFoundException;
@@ -33,6 +34,19 @@ public class ApiExceptionHandler {
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                 .body(new ErrorResponse("MODEL_UNAVAILABLE",
                         "El asistente no está disponible en este momento. Intenta de nuevo más tarde."));
+    }
+
+    /**
+     * Más específico que el handler de AiModelException (del que hereda), así que Spring
+     * elige este: el frontend necesita distinguir "se cortó por tamaño" de "el modelo falló",
+     * porque lo primero se arregla acortando la entrada, no reintentando.
+     */
+    @ExceptionHandler(AiResponseTruncatedException.class)
+    public ResponseEntity<ErrorResponse> handleTruncated(AiResponseTruncatedException ex) {
+        log.error("La respuesta del modelo se cortó por límite de tokens", ex);
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                .body(new ErrorResponse("MODEL_RESPONSE_TRUNCATED",
+                        "La respuesta no cupo en el límite de tokens. Intenta con un mensaje más corto."));
     }
 
     @ExceptionHandler(AiModelException.class)

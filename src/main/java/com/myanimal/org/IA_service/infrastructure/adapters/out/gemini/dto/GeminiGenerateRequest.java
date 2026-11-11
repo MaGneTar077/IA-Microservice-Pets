@@ -21,4 +21,5 @@ public class GeminiGenerateRequest {
     private GeminiSystemInstruction systemInstruction;
     private List<GeminiContent> contents;
     private List<GeminiTool> tools;
+    private GeminiGenerationConfig generationConfig;
 }
