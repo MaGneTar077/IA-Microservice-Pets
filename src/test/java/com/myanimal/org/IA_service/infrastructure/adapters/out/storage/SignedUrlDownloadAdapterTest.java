@@ -12,6 +12,10 @@ import org.springframework.web.reactive.function.client.WebClient;
 import com.myanimal.org.IA_service.domain.exception.AnalysisUnavailableException;
 import com.myanimal.org.IA_service.domain.exception.FileTooLargeException;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Mono;
 
 class SignedUrlDownloadAdapterTest {
@@ -60,5 +64,27 @@ class SignedUrlDownloadAdapterTest {
 
         assertThatThrownBy(() -> adapter.download("https://storage.test/signed-url"))
                 .isInstanceOf(AnalysisUnavailableException.class);
+    }
+
+    @Test
+    void errorDeDescargaNuncaLogueaLaUrlFirmada() {
+        Logger logger = (Logger) LoggerFactory.getLogger(SignedUrlDownloadAdapter.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+
+        ExchangeStrategies strategies = strategiesWithLimit(1024 * 1024);
+        ClientResponse response = ClientResponse.create(HttpStatus.FORBIDDEN, strategies).build();
+        SignedUrlDownloadAdapter adapter = buildAdapter(response, strategies);
+        String signedUrl = "https://storage.test/signed-url?token=super-secreto";
+
+        try {
+            assertThatThrownBy(() -> adapter.download(signedUrl)).isInstanceOf(AnalysisUnavailableException.class);
+
+            assertThat(appender.list).noneMatch(event -> event.getFormattedMessage().contains("super-secreto")
+                    || event.getFormattedMessage().contains(signedUrl));
+        } finally {
+            logger.detachAppender(appender);
+        }
     }
 }

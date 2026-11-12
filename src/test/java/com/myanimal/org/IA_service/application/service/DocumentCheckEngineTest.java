@@ -132,7 +132,18 @@ class DocumentCheckEngineTest {
 
         DocumentAnalysis analysis = engine.buildAnalysis(requestBuilder().build(), extraction);
 
+        assertThat(analysis.getLegible()).isFalse();
         assertThat(analysis.getRecommendation()).isEqualTo("NEEDS_REVIEW");
+    }
+
+    @Test
+    void flagWrongDocumentDaLikelyInvalidAunqueElTipoCoincida() {
+        DocumentExtraction extraction = extractionBuilder().flags(List.of("WRONG_DOCUMENT")).build();
+
+        DocumentAnalysis analysis = engine.buildAnalysis(requestBuilder().build(), extraction);
+
+        assertThat(analysis.getTypeMatches()).isTrue();
+        assertThat(analysis.getRecommendation()).isEqualTo("LIKELY_INVALID");
     }
 
     @Test
