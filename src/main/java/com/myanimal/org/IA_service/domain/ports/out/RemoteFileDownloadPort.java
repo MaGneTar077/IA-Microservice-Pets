@@ -1,6 +1,8 @@
 package com.myanimal.org.IA_service.domain.ports.out;
 
+import com.myanimal.org.IA_service.domain.model.DownloadedFile;
+
 public interface RemoteFileDownloadPort {
 
-    byte[] download(String fileUrl);
+    DownloadedFile download(String fileUrl);
 }

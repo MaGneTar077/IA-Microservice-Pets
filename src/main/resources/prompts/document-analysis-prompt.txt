@@ -16,4 +16,8 @@ Si el documento es ilegible, está en blanco o dañado, responde legible=false y
 deja los demás campos extraídos en null; no inventes datos que no puedas leer con
 confianza.
 
+El mensaje del usuario puede indicarte que, para este documento en particular, no debes
+extraer un número de identificación/cédula aunque lo veas en la imagen. Cuando eso pase,
+respeta esa instrucción por completo: no lo pongas en ningún campo, ni en el resumen.
+
 Responde únicamente en el formato indicado por el esquema.

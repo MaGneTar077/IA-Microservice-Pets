@@ -11,16 +11,36 @@ import org.springframework.stereotype.Component;
 
 import com.myanimal.org.IA_service.application.dto.DeclaredData;
 import com.myanimal.org.IA_service.application.dto.DocumentAnalysis;
-import com.myanimal.org.IA_service.application.dto.DocumentAnalysisRequest;
 import com.myanimal.org.IA_service.application.dto.DocumentCheck;
 import com.myanimal.org.IA_service.application.dto.DocumentExtraction;
 import com.myanimal.org.IA_service.application.dto.ExtractedData;
+import com.myanimal.org.IA_service.domain.model.DocumentType;
 import com.myanimal.org.IA_service.infrastructure.config.DocumentAnalysisProperties;
 
 /**
- * Checks y recommendation en código (sección 5 del checkpoint): el LLM solo extrae
- * (DocumentExtraction), nunca decide si algo coincide. typeMatches se calcula aquí
- * comparando detectedType contra el documentType declarado.
+ * Checks y recommendation en código: el LLM solo extrae (DocumentExtraction), nunca decide
+ * si algo coincide. typeMatches se calcula aquí comparando detectedType contra el
+ * documentType del documento.
+ *
+ * Principio de riskLevel (lo decide VerificationAggregator a partir de esto, documentado
+ * también en IA_VERIFICACION_DOCUMENTOS.md): HIGH cuando algo se CONTRADICE, MEDIUM cuando
+ * algo FALTA o no se pudo verificar. Un check en FAIL es una contradicción (se leyó y no
+ * cuadra); UNCLEAR es "no se pudo verificar", nunca una contradicción.
+ *
+ * Checks clave (si fallan, el documento es LIKELY_INVALID — "se contradice"):
+ * - TYPE_MATCHES FAIL, NIT_MATCHES FAIL o flag WRONG_DOCUMENT.
+ * - NIT_CHECK_DIGIT_VALID FAIL, pero SOLO si NIT_MATCHES dio PASS: si el NIT declarado
+ *   (escrito por una persona) coincide con el extraído, eso corrobora que el modelo leyó
+ *   bien ese NIT, así que un dígito de verificación que no cuadra es un problema del NIT
+ *   mismo, no un error de lectura. Si NIT_MATCHES no corrobora (UNCLEAR o FAIL), un fallo
+ *   del dígito de verificación puede ser solo un error de OCR en esa posición: no escala
+ *   solo (NIT_MATCHES FAIL ya escala por su cuenta; UNCLEAR deja el documento en
+ *   NEEDS_REVIEW).
+ * Limitación conocida y aceptada: si el NIT declarado no incluye el dígito de verificación,
+ * NIT_MATCHES corrobora el cuerpo del NIT pero no esa posición, así que un OCR que falle
+ * justo ahí podría escalar a LIKELY_INVALID. Es poco probable (un documento borroso suele
+ * romper también NIT_MATCHES) y el costo es revisión humana extra, no una decisión
+ * automática equivocada.
  */
 @Component
 class DocumentCheckEngine {
@@ -40,22 +60,63 @@ class DocumentCheckEngine {
         this.properties = properties;
     }
 
-    DocumentAnalysis buildAnalysis(DocumentAnalysisRequest request, DocumentExtraction extraction) {
-        ExtractedData extracted = extraction.getExtracted();
-        DeclaredData declared = request.getDeclared();
+    DocumentAnalysis buildAnalysis(DocumentType documentType, DeclaredData declared, DocumentExtraction extraction) {
+        if (documentType == DocumentType.LEGAL_REP_ID) {
+            return buildLegalRepIdAnalysis(documentType, declared, extraction);
+        }
+        return buildBusinessDocumentAnalysis(documentType, declared, extraction);
+    }
 
-        boolean typeMatches = request.getDocumentType().equals(extraction.getDetectedType());
+    private DocumentAnalysis buildLegalRepIdAnalysis(DocumentType documentType, DeclaredData declared,
+            DocumentExtraction extraction) {
+        boolean typeMatches = documentType.name().equals(extraction.getDetectedType());
 
         List<DocumentCheck> checks = new ArrayList<>();
         checks.add(new DocumentCheck("TYPE_MATCHES", typeMatches ? PASS : FAIL,
-                "Tipo detectado: " + extraction.getDetectedType() + ", declarado: " + request.getDocumentType()));
+                "Tipo detectado: " + extraction.getDetectedType() + ", declarado: " + documentType.name()));
+        checks.add(nameMatchesCheck("LEGAL_REP_MATCHES",
+                extraction.getExtracted() == null ? null : extraction.getExtracted().getLegalRepresentativeName(),
+                declared == null ? null : declared.getLegalRepresentativeName()));
+
+        String recommendation = computeRecommendation(extraction, typeMatches, checks);
+
+        // Privacidad: una cédula no tiene NIT, razón social, fecha de expedición ni
+        // actividad económica que verificar — y, sobre todo, su número nunca debe salir de
+        // aquí aunque el modelo lo hubiera extraído desobedeciendo el prompt.
+        ExtractedData sanitized = ExtractedData.builder()
+                .legalRepresentativeName(extraction.getExtracted() == null ? null
+                        : extraction.getExtracted().getLegalRepresentativeName())
+                .build();
+
+        return DocumentAnalysis.builder()
+                .detectedType(extraction.getDetectedType())
+                .typeMatches(typeMatches)
+                .legible(extraction.getLegible())
+                .extracted(sanitized)
+                .checks(checks)
+                .flags(extraction.getFlags())
+                .confidence(extraction.getConfidence())
+                .summary(extraction.getSummary())
+                .recommendation(recommendation)
+                .build();
+    }
+
+    private DocumentAnalysis buildBusinessDocumentAnalysis(DocumentType documentType, DeclaredData declared,
+            DocumentExtraction extraction) {
+        ExtractedData extracted = extraction.getExtracted();
+
+        boolean typeMatches = documentType.name().equals(extraction.getDetectedType());
+
+        List<DocumentCheck> checks = new ArrayList<>();
+        checks.add(new DocumentCheck("TYPE_MATCHES", typeMatches ? PASS : FAIL,
+                "Tipo detectado: " + extraction.getDetectedType() + ", declarado: " + documentType.name()));
         checks.add(nitMatchesCheck(extracted, declared));
         checks.add(nitCheckDigitCheck(extracted));
         checks.add(nameMatchesCheck("NAME_MATCHES", extracted == null ? null : extracted.getLegalName(),
-                declared.getClinicName()));
+                declared == null ? null : declared.getLegalName()));
         checks.add(nameMatchesCheck("LEGAL_REP_MATCHES",
                 extracted == null ? null : extracted.getLegalRepresentativeName(),
-                declared.getLegalRepresentativeName()));
+                declared == null ? null : declared.getLegalRepresentativeName()));
         checks.add(issueDateRecentCheck(extracted));
         checks.add(activityRelatedCheck(extracted));
 
@@ -75,14 +136,20 @@ class DocumentCheckEngine {
     }
 
     private DocumentCheck nitMatchesCheck(ExtractedData extracted, DeclaredData declared) {
-        String extractedNit = extracted == null ? null : digitsOnly(extracted.getNit());
-        String declaredNit = baseNit(declared.getNit());
-        if (extractedNit == null || extractedNit.isEmpty() || declaredNit.isEmpty()) {
+        String extractedDigits = extracted == null ? "" : digitsOnly(extracted.getNit());
+        String declaredDigits = declared == null ? "" : digitsOnly(declared.getNit());
+        if (extractedDigits.isEmpty() || declaredDigits.isEmpty()) {
             return new DocumentCheck("NIT_MATCHES", UNCLEAR, "No hay NIT extraído o declarado para comparar.");
         }
-        boolean matches = extractedNit.equals(declaredNit);
+
+        // El NIT declarado llega tal como Veterinary lo guarda: con o sin dígito de
+        // verificación, con o sin guion. Coincide si los dígitos declarados son iguales al
+        // NIT extraído, o al NIT extraído seguido de su dígito de verificación.
+        String checkDigit = extracted == null ? "" : digitsOnly(extracted.getVerificationDigit());
+        boolean matches = declaredDigits.equals(extractedDigits)
+                || declaredDigits.equals(extractedDigits + checkDigit);
         return new DocumentCheck("NIT_MATCHES", matches ? PASS : FAIL,
-                "Extraído: " + extractedNit + ", declarado: " + declaredNit);
+                "Extraído: " + extractedDigits + ", declarado: " + declaredDigits);
     }
 
     private DocumentCheck nitCheckDigitCheck(ExtractedData extracted) {
@@ -146,9 +213,13 @@ class DocumentCheckEngine {
 
         boolean hasWrongDocumentFlag = extraction.getFlags() != null
                 && extraction.getFlags().contains("WRONG_DOCUMENT");
+        boolean nitMatchesPassed = checks.stream()
+                .anyMatch(check -> "NIT_MATCHES".equals(check.getCode()) && PASS.equals(check.getStatus()));
         boolean nitFails = checks.stream()
                 .anyMatch(check -> "NIT_MATCHES".equals(check.getCode()) && FAIL.equals(check.getStatus()));
-        if (!typeMatches || nitFails || hasWrongDocumentFlag) {
+        boolean nitCheckDigitFailsCorroborated = nitMatchesPassed && checks.stream()
+                .anyMatch(check -> "NIT_CHECK_DIGIT_VALID".equals(check.getCode()) && FAIL.equals(check.getStatus()));
+        if (!typeMatches || nitFails || hasWrongDocumentFlag || nitCheckDigitFailsCorroborated) {
             return "LIKELY_INVALID";
         }
 
@@ -170,15 +241,6 @@ class DocumentCheckEngine {
         }
         int remainder = sum % 11;
         return (remainder == 0 || remainder == 1) ? remainder : 11 - remainder;
-    }
-
-    private String baseNit(String declaredNit) {
-        if (declaredNit == null) {
-            return "";
-        }
-        int lastDash = declaredNit.lastIndexOf('-');
-        String base = lastDash >= 0 ? declaredNit.substring(0, lastDash) : declaredNit;
-        return digitsOnly(base);
     }
 
     private String digitsOnly(String value) {

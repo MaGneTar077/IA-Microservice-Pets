@@ -11,7 +11,7 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 public class DeclaredData {
 
-    private String clinicName;
+    private String legalName;
     private String nit;
     private String legalRepresentativeName;
     private String city;

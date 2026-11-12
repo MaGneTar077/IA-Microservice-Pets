@@ -17,6 +17,10 @@ public class GeminiProperties {
     private String modelFallback;
     private String baseUrl;
     private int timeoutSeconds;
+    // Timeout dedicado para /internal/verification/analyze: el chat se queda en
+    // timeoutSeconds (20s); este camino necesita uno corto para que el presupuesto total de
+    // la petición (50s, varios documentos en paralelo) sea alcanzable.
+    private int verificationTimeoutSeconds = 10;
     private int maxRetries = 1;
     private long retryBackoffMillis = 1000;
     private int maxOutputTokens = 32768;

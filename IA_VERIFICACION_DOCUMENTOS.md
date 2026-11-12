@@ -41,67 +41,117 @@ Cuando una clínica envía sus documentos de verificación, la IA los lee y le e
 7. El revisor humano decide. Si la IA falló, el panel muestra "análisis no disponible" y el revisor trabaja como siempre.
 8. Si la clínica reemplaza un documento, el análisis anterior de ese documento queda obsoleto y se vuelve a analizar.
 
-## 4. Contrato propuesto (a alinear con Veterinary)
+## 4. Contrato real (confirmado con Veterinary, reemplaza la propuesta original)
 
-Se llama solo servicio a servicio, con `X-Internal-Api-Key` (comparación en tiempo constante, falla al arrancar si falta la variable). **Nunca se expone por el gateway.**
+> La sección 4 original (`POST /internal/ai/document-analysis`, un documento por llamada,
+> `mimeType`/`sha256` provistos por el caller, `documentType` en español) era una propuesta
+> que Veterinary nunca implementó. Veterinary ya tenía su integración construida (apagada)
+> contra un contrato distinto. Como el nuestro era nuevo y no estaba desplegado, el servicio
+> de IA se adaptó al contrato real de Veterinary, no al revés. El endpoint, el DTO y el
+> controller viejos se eliminaron (no quedaron dos endpoints en paralelo).
 
-### Request: `POST /internal/ai/document-analysis`
+Se llama solo servicio a servicio, con `X-Internal-Api-Key` (comparación en tiempo constante, falla al arrancar si falta la variable). **Nunca se expone por el gateway.** Timeout total en Veterinary: 60s (el servicio de IA se autoimpone 50s, ver sección 8).
+
+### Request: `POST /internal/verification/analyze`
 
 ```json
 {
-  "documentId": "uuid",
-  "veterinaryId": "uuid",
-  "documentType": "RUT",
-  "fileUrl": "https://... (URL firmada, expira en minutos)",
-  "mimeType": "application/pdf",
-  "sha256": "hex",
+  "requestId": "req-123",
+  "subjectType": "CLINIC",
+  "documents": [
+    { "documentType": "RUT", "signedUrl": "https://... (URL firmada, 10 min de vigencia)" },
+    { "documentType": "CHAMBER_OF_COMMERCE", "signedUrl": "https://..." },
+    { "documentType": "LEGAL_REP_ID", "signedUrl": "https://..." }
+  ],
   "declared": {
-    "clinicName": "Clínica Patitas",
-    "nit": "900123456-7",
+    "legalName": "Clínica Patitas SAS",
+    "nit": "900123456-8",
     "legalRepresentativeName": "Nombre Apellido",
     "city": "Cartagena"
   }
 }
 ```
 
-`documentType` debe coincidir con los tipos que Veterinary ya maneja (por confirmar). Para este alcance: `RUT` y `CAMARA_COMERCIO`; los demás tipos pueden devolver `analysis: null` con `supported: false`.
+- Veterinary **no manda `mimeType` ni `sha256`**: el servicio de IA detecta el tipo de
+  archivo por el header `Content-Type` de la descarga y por los bytes del contenido (magic
+  numbers), y calcula el `sha256` él mismo al descargar.
+- `declared` es **opcional** (Veterinary lo agrega en una iteración posterior). Sin él, los
+  checks que lo necesitan quedan `UNCLEAR` y la recomendación global nunca puede ser
+  `READY_FOR_HUMAN_REVIEW` (ver sección 5).
+- `documentType` soportados (llaman a Gemini): `RUT`, `CHAMBER_OF_COMMERCE`, `LEGAL_REP_ID`.
+  No soportados (`supported: false`, nunca se descargan ni se llama a Gemini):
+  `FACADE_PHOTO`, `PROFESSIONAL_CARD`, `ID_DOCUMENT`, `DEGREE`.
+- Los documentos de una misma solicitud se procesan **en paralelo**, acotados a un pool de
+  hilos fijo (el proceso comparte CPU con el chat).
 
 ### Response 200
 
 ```json
 {
-  "documentId": "uuid",
-  "supported": true,
-  "model": "nombre-del-modelo-usado",
-  "analyzedAt": "2026-11-12T17:00:00Z",
-  "analysis": {
-    "detectedType": "RUT",
-    "typeMatches": true,
-    "legible": true,
-    "extracted": {
-      "nit": "900123456",
-      "verificationDigit": "7",
-      "legalName": "string",
-      "legalRepresentativeName": "string",
-      "issueDate": "2026-10-20",
-      "economicActivity": "string"
+  "requestId": "req-123",
+  "recommendation": "NEEDS_ATTENTION",
+  "riskLevel": "MEDIUM",
+  "documents": [
+    {
+      "documentType": "RUT",
+      "supported": true,
+      "analysis": {
+        "detectedType": "RUT",
+        "typeMatches": true,
+        "legible": true,
+        "extracted": {
+          "nit": "900123456",
+          "verificationDigit": "8",
+          "legalName": "string",
+          "legalRepresentativeName": "string",
+          "issueDate": "2026-10-20",
+          "economicActivity": "string"
+        },
+        "checks": [
+          { "code": "TYPE_MATCHES", "status": "PASS", "detail": "..." },
+          { "code": "NIT_MATCHES", "status": "PASS", "detail": "..." },
+          { "code": "NIT_CHECK_DIGIT_VALID", "status": "PASS", "detail": "..." },
+          { "code": "NAME_MATCHES", "status": "UNCLEAR", "detail": "..." }
+        ],
+        "flags": ["LOW_QUALITY"],
+        "confidence": 0.82,
+        "summary": "Resumen de 2 o 3 líneas para el revisor.",
+        "recommendation": "NEEDS_REVIEW"
+      },
+      "error": null
     },
-    "checks": [
-      { "code": "TYPE_MATCHES", "status": "PASS", "detail": "..." },
-      { "code": "NIT_MATCHES", "status": "PASS", "detail": "..." },
-      { "code": "NIT_CHECK_DIGIT_VALID", "status": "PASS", "detail": "..." },
-      { "code": "NAME_MATCHES", "status": "UNCLEAR", "detail": "..." }
-    ],
-    "flags": ["LOW_QUALITY"],
-    "confidence": 0.82,
-    "summary": "Resumen de 2 o 3 líneas para el revisor.",
-    "recommendation": "NEEDS_REVIEW"
-  }
+    { "documentType": "FACADE_PHOTO", "supported": false, "analysis": null, "error": null },
+    { "documentType": "LEGAL_REP_ID", "supported": true, "analysis": null,
+      "error": "No se pudo descargar el documento." }
+  ]
 }
 ```
 
+**El vocabulario global y el de cada documento son distintos, a propósito — no mezclarlos:**
+
+| Nivel | Campo | Valores |
+|---|---|---|
+| Global | `recommendation` | `READY_FOR_HUMAN_REVIEW` \| `NEEDS_ATTENTION` |
+| Global | `riskLevel` | `LOW` \| `MEDIUM` \| `HIGH` (no es 1:1 con `recommendation`: 2 valores vs. 3) |
+| Por documento | `analysis.recommendation` | `LIKELY_VALID` \| `NEEDS_REVIEW` \| `LIKELY_INVALID` |
+
+Reglas de agregación global (ver sección 5 para el detalle de qué es "check clave"):
+
+| Condición | `recommendation` | `riskLevel` |
+|---|---|---|
+| Todo ok: `declared` presente, todos los documentos soportados sin error y `LIKELY_VALID` | `READY_FOR_HUMAN_REVIEW` | `LOW` |
+| Algún documento soportado con un check clave en `FAIL` (`analysis.recommendation == LIKELY_INVALID`) | `NEEDS_ATTENTION` | `HIGH` |
+| Dudas o algo no evaluado: sin `declared`, ningún documento soportado, algún tipo no soportado en la solicitud, algún documento con `error`, o algún documento `NEEDS_REVIEW` | `NEEDS_ATTENTION` | `MEDIUM` (mínimo) |
+
+`HIGH` pesa más que `MEDIUM` si ambas condiciones aplican a la vez.
+
 - `status` de cada check: `PASS`, `FAIL` o `UNCLEAR`.
-- Un archivo ilegible **no es un error**: se responde 200 con `legible: false` y `recommendation: NEEDS_REVIEW`.
+- Un documento ilegible **no es un error**: queda con `legible: false` y
+  `analysis.recommendation: NEEDS_REVIEW` dentro de su entrada.
+- Un documento que falla al procesar (descarga, tipo de archivo, etc.) queda con
+  `supported: true`, `analysis: null` y `error` con el motivo — nunca tumba a los demás
+  documentos de la solicitud.
+- 503 de la petición completa **solo si fallan todos los documentos**.
 
 ### Errores
 
@@ -111,34 +161,45 @@ Formato del equipo: `{ "timestamp", "status", "error", "message", "code" }`.
 |---|---|---|
 | 401 | `UNAUTHENTICATED` | Falta o es inválida la API key |
 | 400 | `VALIDATION_ERROR` | Body incompleto o mal formado |
-| 400 | `UNSUPPORTED_MIME_TYPE` | Tipo de archivo no permitido |
-| 400 | `FILE_URL_NOT_ALLOWED` | La URL no es de un host permitido |
-| 413 | `FILE_TOO_LARGE` | Supera el tamaño o las páginas máximas |
-| 503 | `AI_PROVIDER_UNAVAILABLE` | Gemini caído, con tiempo agotado o límite alcanzado |
+| 400 | `UNSUPPORTED_MIME_TYPE` | Tipo de archivo no permitido (por documento, se refleja como `error` en esa entrada salvo que fallen todos) |
+| 400 | `FILE_URL_NOT_ALLOWED` | La URL no es de un host permitido (idem) |
+| 413 | `FILE_TOO_LARGE` | Supera el tamaño o las páginas máximas (idem) |
+| 503 | `AI_PROVIDER_UNAVAILABLE` | Gemini caído, con tiempo agotado, o fallaron todos los documentos de la solicitud |
 
 ## 5. Qué se verifica por tipo de documento
 
 **Regla general:** el LLM **extrae**; las comparaciones y los cálculos los hace el **código**. El LLM no decide si algo "coincide".
 
-**RUT (DIAN):** NIT, dígito de verificación, razón social o nombre, representante o titular, fecha del documento y actividad económica.
+**`RUT` (DIAN):** NIT, dígito de verificación, razón social o nombre, representante o titular, fecha del documento y actividad económica.
 
-**Certificado de existencia y representación legal (Cámara de Comercio):** razón social, NIT, representante legal, matrícula mercantil, fecha de expedición y actividad.
+**`CHAMBER_OF_COMMERCE` (certificado de existencia y representación legal):** razón social, NIT, representante legal, fecha de expedición y actividad.
+
+**`LEGAL_REP_ID` (cédula/identificación del representante legal):** **solo** el nombre, contra `declared.legalRepresentativeName`. No tiene NIT, razón social, fecha de expedición ni actividad económica — esos checks no aplican y no se emiten para este tipo.
+**Privacidad, no negociable:** el número de documento/cédula **nunca** se extrae, nunca se devuelve en ningún campo de `extracted` ni en `summary`, y nunca se loguea. El prompt instruye explícitamente al modelo a no extraerlo aunque sea visible, y el código además descarta cualquier campo ajeno al nombre antes de responder (defensa en profundidad si el modelo desobedece). Hay tests que verifican ambas cosas.
 
 Checks en código:
-- `NIT_MATCHES`: comparar sin puntos, guiones ni dígito de verificación contra el NIT declarado.
+- `NIT_MATCHES`: el NIT declarado llega tal como Veterinary lo guarda — con o sin dígito de verificación, con o sin guion. Coincide si los dígitos del declarado (sin puntos ni guion) son iguales al NIT extraído, o al NIT extraído seguido de su dígito de verificación.
 - `NIT_CHECK_DIGIT_VALID`: calcular el dígito de verificación con el algoritmo de la DIAN (pesos 3, 7, 13, 17, 19, 23, 29, 37, 41, 43, 47, 53, 59, 67, 71 aplicados de derecha a izquierda; suma módulo 11; si el resultado es 0 o 1, ese es el dígito; si no, 11 menos el resultado).
 - `NAME_MATCHES`: comparación normalizada (minúsculas, sin tildes, sin signos ni sufijos como "SAS" o "LTDA"); si la similitud es parcial, `UNCLEAR`, no `FAIL`.
 - `LEGAL_REP_MATCHES`: igual que el nombre.
-- `ISSUE_DATE_RECENT`: la fecha de expedición no debe superar `DOC_MAX_AGE_DAYS` (configurable; **el valor lo define el negocio, no asumirlo**).
-- `ACTIVITY_RELATED`: la actividad económica es compatible con servicios veterinarios (por ejemplo, el código CIIU de actividades veterinarias; verificar el código vigente antes de fijarlo). Si no es claro, `UNCLEAR`.
-- `TYPE_MATCHES`: el tipo detectado coincide con el declarado.
+- `ISSUE_DATE_RECENT`: la fecha de expedición no debe superar `DOC_MAX_AGE_DAYS` (configurable; **el valor lo define el negocio, no asumirlo** — default provisional 90 días).
+- `ACTIVITY_RELATED`: la actividad económica es compatible con servicios veterinarios. Heurística por palabra clave ("veterinari..."), no por código CIIU exacto — **pendiente confirmar el código CIIU vigente con el negocio**. Si no es claro, `UNCLEAR`.
+- `TYPE_MATCHES`: el tipo detectado coincide con el `documentType` del documento.
+
+Sin `declared` (o sin el campo específico que necesita cada check), `NIT_MATCHES`, `NAME_MATCHES` y `LEGAL_REP_MATCHES` quedan `UNCLEAR`. `TYPE_MATCHES`, `NIT_CHECK_DIGIT_VALID`, `ISSUE_DATE_RECENT` y `ACTIVITY_RELATED` no dependen de `declared` y se calculan igual.
 
 `flags` posibles: `LOW_QUALITY`, `WRONG_DOCUMENT`, `PAGES_MISSING`, `POSSIBLE_TAMPERING`, `INSTRUCTIONS_IN_DOCUMENT`.
 
-**`recommendation`**, calculada en código a partir de los checks:
+**`analysis.recommendation`** (por documento, calculada en código a partir de los checks):
 - `LIKELY_VALID`: todos los checks relevantes en `PASS` y ningún flag.
-- `LIKELY_INVALID`: algún check clave en `FAIL` (tipo, NIT) o `WRONG_DOCUMENT`.
-- `NEEDS_REVIEW`: todo lo demás, incluido cualquier `UNCLEAR`, flag o baja confianza.
+- `LIKELY_INVALID`: algún check clave en `FAIL`, o flag `WRONG_DOCUMENT`.
+- `NEEDS_REVIEW`: todo lo demás, incluido cualquier `UNCLEAR`, flag o documento ilegible.
+
+**Qué es un "check clave" (confirmado con negocio) — principio: HIGH cuando algo se CONTRADICE, MEDIUM/NEEDS_REVIEW cuando algo FALTA o no se pudo verificar:**
+- `TYPE_MATCHES` en `FAIL`, `NIT_MATCHES` en `FAIL`, o flag `WRONG_DOCUMENT`: siempre clave.
+- `NIT_CHECK_DIGIT_VALID` en `FAIL`, **solo si `NIT_MATCHES` dio `PASS`**: el NIT declarado (escrito por una persona, no por OCR) coincidiendo con el extraído corrobora que el modelo lo leyó bien, así que un dígito de verificación que no cuadra es un problema del NIT mismo, no un error de lectura. Si `NIT_MATCHES` no corrobora (`UNCLEAR` o `FAIL`), un fallo del dígito de verificación por sí solo **no** escala (podría ser OCR): el documento queda en `NEEDS_REVIEW`, no `LIKELY_INVALID`.
+  **Limitación conocida y aceptada:** si el NIT declarado no incluye el dígito de verificación, `NIT_MATCHES` corrobora el cuerpo del NIT pero no esa posición, así que un OCR que falle justo ahí podría escalar a `LIKELY_INVALID`/`HIGH` de forma incorrecta. Es poco probable (un documento borroso suele romper también `NIT_MATCHES`) y el costo es revisión humana extra, no una decisión automática equivocada — se acepta.
+- `ISSUE_DATE_RECENT` en `FAIL` **no** es clave: el documento es viejo (un hecho, no una contradicción) y el umbral sigue siendo provisional. Queda en `NEEDS_REVIEW`.
 
 `POSSIBLE_TAMPERING` es una señal débil: la IA no es un peritaje forense. Debe sonar como "revisar con atención", nunca como "es falso".
 
@@ -175,10 +236,12 @@ Los documentos traen datos personales (representante legal, cédula, direcciones
 | `INTERNAL_API_KEY` | Mismo secreto que los demás servicios |
 | `GEMINI_API_KEY` o credenciales de Vertex AI | Acceso al modelo |
 | `GEMINI_MODEL` | Modelo a usar |
-| `ALLOWED_FILE_HOSTS` | Hosts permitidos para `fileUrl` |
+| `ALLOWED_FILE_HOSTS` | Hosts permitidos para `signedUrl` |
 | `MAX_FILE_MB` y `MAX_PAGES` | Límites del archivo |
-| `ANALYSIS_TIMEOUT_MS` | Tiempo máximo por análisis |
+| `ANALYSIS_TIMEOUT_MS` | Presupuesto total de la petición completa (varios documentos en paralelo), default 50000 |
+| `GEMINI_VERIFICATION_TIMEOUT` | Timeout de cada llamada a Gemini en este camino, aparte del timeout del chat (`GEMINI_TIMEOUT`); sin fallback de modelo aquí |
 | `DOC_MAX_AGE_DAYS` | Antigüedad máxima de la fecha de expedición |
+| `RATELIMIT_DOCS_RPH` | Límite de solicitudes por hora a este endpoint (ventana deslizante global) |
 
 **Aviso de migración:** el proyecto de Google Cloud vence el **18 de noviembre**. Las credenciales de Gemini y `INTERNAL_API_KEY` se rotan y pasan a Secret Manager en el proyecto nuevo. No dejar secretos como variables normales.
 

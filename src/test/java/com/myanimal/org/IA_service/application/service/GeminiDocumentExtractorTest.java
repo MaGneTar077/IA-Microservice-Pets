@@ -7,8 +7,6 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import java.util.UUID;
-
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -18,11 +16,11 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.myanimal.org.IA_service.application.dto.DeclaredData;
-import com.myanimal.org.IA_service.application.dto.DocumentAnalysisRequest;
 import com.myanimal.org.IA_service.application.dto.DocumentExtractionResult;
 import com.myanimal.org.IA_service.domain.exception.AnalysisUnavailableException;
 import com.myanimal.org.IA_service.domain.model.AiRequest;
 import com.myanimal.org.IA_service.domain.model.AiResponse;
+import com.myanimal.org.IA_service.domain.model.DocumentType;
 import com.myanimal.org.IA_service.domain.ports.out.AiModelPort;
 
 @ExtendWith(MockitoExtension.class)
@@ -56,16 +54,8 @@ class GeminiDocumentExtractorTest {
         extractor = new GeminiDocumentExtractor(aiModelPort, "prompt de sistema", new ObjectMapper());
     }
 
-    private DocumentAnalysisRequest request() {
-        return DocumentAnalysisRequest.builder()
-                .documentId(UUID.randomUUID())
-                .veterinaryId(UUID.randomUUID())
-                .documentType("RUT")
-                .fileUrl("https://storage.test/signed-url")
-                .mimeType("application/pdf")
-                .sha256("abc123")
-                .declared(DeclaredData.builder().clinicName("Clínica Patitas").nit("900123456-7").build())
-                .build();
+    private DeclaredData declared() {
+        return DeclaredData.builder().legalName("Clínica Patitas").nit("900123456-7").build();
     }
 
     @Test
@@ -73,7 +63,8 @@ class GeminiDocumentExtractorTest {
         when(aiModelPort.generate(any())).thenReturn(
                 AiResponse.builder().text(VALID_JSON).modelUsed("gemini-test").build());
 
-        DocumentExtractionResult result = extractor.extract(request(), new byte[] { 1, 2, 3 });
+        DocumentExtractionResult result = extractor.extract(DocumentType.RUT, declared(), new byte[] { 1, 2, 3 },
+                "application/pdf");
 
         assertThat(result.getModelUsed()).isEqualTo("gemini-test");
         assertThat(result.getExtraction().getDetectedType()).isEqualTo("RUT");
@@ -87,7 +78,8 @@ class GeminiDocumentExtractorTest {
                 .thenReturn(AiResponse.builder().text("esto no es json").modelUsed("gemini-test").build())
                 .thenReturn(AiResponse.builder().text(VALID_JSON).modelUsed("gemini-test").build());
 
-        DocumentExtractionResult result = extractor.extract(request(), new byte[] { 1, 2, 3 });
+        DocumentExtractionResult result = extractor.extract(DocumentType.RUT, declared(), new byte[] { 1, 2, 3 },
+                "application/pdf");
 
         assertThat(result.getExtraction().getDetectedType()).isEqualTo("RUT");
         verify(aiModelPort, times(2)).generate(any());
@@ -98,7 +90,8 @@ class GeminiDocumentExtractorTest {
         when(aiModelPort.generate(any()))
                 .thenReturn(AiResponse.builder().text("no json").modelUsed("gemini-test").build());
 
-        assertThatThrownBy(() -> extractor.extract(request(), new byte[] { 1, 2, 3 }))
+        assertThatThrownBy(() -> extractor.extract(DocumentType.RUT, declared(), new byte[] { 1, 2, 3 },
+                "application/pdf"))
                 .isInstanceOf(AnalysisUnavailableException.class);
         verify(aiModelPort, times(2)).generate(any());
     }
@@ -109,7 +102,7 @@ class GeminiDocumentExtractorTest {
                 AiResponse.builder().text(VALID_JSON).modelUsed("gemini-test").build());
         ArgumentCaptor<AiRequest> captor = ArgumentCaptor.forClass(AiRequest.class);
 
-        extractor.extract(request(), new byte[] { 9, 9, 9 });
+        extractor.extract(DocumentType.RUT, declared(), new byte[] { 9, 9, 9 }, "application/pdf");
 
         verify(aiModelPort).generate(captor.capture());
         AiRequest sent = captor.getValue();
@@ -118,5 +111,29 @@ class GeminiDocumentExtractorTest {
         assertThat(sent.getMessages().get(0).getParts()).hasSize(2);
         assertThat(sent.getMessages().get(0).getParts().get(1).getData()).isEqualTo(new byte[] { 9, 9, 9 });
         assertThat(sent.getMessages().get(0).getParts().get(1).getMimeType()).isEqualTo("application/pdf");
+    }
+
+    @Test
+    void sinDeclaradoFuncionaIgual() {
+        when(aiModelPort.generate(any())).thenReturn(
+                AiResponse.builder().text(VALID_JSON).modelUsed("gemini-test").build());
+
+        DocumentExtractionResult result = extractor.extract(DocumentType.RUT, null, new byte[] { 1 },
+                "application/pdf");
+
+        assertThat(result.getExtraction().getDetectedType()).isEqualTo("RUT");
+    }
+
+    @Test
+    void legalRepIdInstruyeNoExtraerElNumeroDeDocumento() {
+        when(aiModelPort.generate(any())).thenReturn(
+                AiResponse.builder().text(VALID_JSON).modelUsed("gemini-test").build());
+        ArgumentCaptor<AiRequest> captor = ArgumentCaptor.forClass(AiRequest.class);
+
+        extractor.extract(DocumentType.LEGAL_REP_ID, declared(), new byte[] { 1 }, "image/jpeg");
+
+        verify(aiModelPort).generate(captor.capture());
+        String userText = captor.getValue().getMessages().get(0).getParts().get(0).getText();
+        assertThat(userText).contains("No extraigas").contains("cédula").doesNotContain("900123456");
     }
 }

@@ -7,6 +7,7 @@ import java.util.Set;
 import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
 
+import org.springframework.context.annotation.Primary;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
@@ -47,7 +48,11 @@ import com.myanimal.org.IA_service.infrastructure.config.GeminiProperties;
 import io.netty.handler.timeout.ReadTimeoutException;
 import lombok.extern.slf4j.Slf4j;
 
+// @Primary: habrá un segundo AiModelPort para /internal/verification/analyze (otro
+// WebClient, otro timeout, sin fallback de modelo — ver GeminiVerificationAdapterConfig).
+// ChatLoopRunner inyecta AiModelPort sin @Qualifier y debe seguir resolviendo este bean.
 @Slf4j
+@Primary
 @Component
 public class GeminiAdapter implements AiModelPort {
 

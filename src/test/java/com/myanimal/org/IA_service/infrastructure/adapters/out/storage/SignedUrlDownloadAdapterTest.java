@@ -35,14 +35,18 @@ class SignedUrlDownloadAdapterTest {
     }
 
     @Test
-    void descargaElContenidoCuandoLaRespuestaEsExitosa() {
+    void descargaElContenidoYElContentTypeCuandoLaRespuestaEsExitosa() {
         ExchangeStrategies strategies = strategiesWithLimit(1024 * 1024);
-        ClientResponse response = ClientResponse.create(HttpStatus.OK, strategies).body("contenido").build();
+        ClientResponse response = ClientResponse.create(HttpStatus.OK, strategies)
+                .header("Content-Type", "application/pdf")
+                .body("contenido")
+                .build();
         SignedUrlDownloadAdapter adapter = buildAdapter(response, strategies);
 
-        byte[] result = adapter.download("https://storage.test/signed-url");
+        var result = adapter.download("https://storage.test/signed-url");
 
-        assertThat(new String(result)).isEqualTo("contenido");
+        assertThat(new String(result.content())).isEqualTo("contenido");
+        assertThat(result.contentType()).isEqualTo("application/pdf");
     }
 
     @Test

@@ -31,11 +31,11 @@ import lombok.extern.slf4j.Slf4j;
  * {@code @Order(HIGHEST_PRECEDENCE)} es necesario: sin él, para las excepciones Ai* que
  * también maneja el ApiExceptionHandler global (sin assignableTypes, aplica a todos los
  * controllers), Spring puede resolver el handler de ese advice en vez de este para
- * DocumentAnalysisController, devolviendo el shape {error, message} en vez del nuestro.
+ * VerificationAnalyzeController, devolviendo el shape {error, message} en vez del nuestro.
  */
 @Slf4j
 @Order(Ordered.HIGHEST_PRECEDENCE)
-@RestControllerAdvice(assignableTypes = DocumentAnalysisController.class)
+@RestControllerAdvice(assignableTypes = VerificationAnalyzeController.class)
 public class InternalApiExceptionHandler {
 
     @ExceptionHandler(DocumentAnalysisValidationException.class)

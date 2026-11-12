@@ -18,5 +18,7 @@ public class DocumentAnalysisProperties {
     private int maxFileMb = 10;
     private int maxPages = 20;
     private int docMaxAgeDays = 90;
-    private long analysisTimeoutMs = 15000;
+    // Presupuesto total de /internal/verification/analyze completo (varios documentos en
+    // paralelo), no de un documento individual: Veterinary corta a los 60s.
+    private long analysisTimeoutMs = 50000;
 }

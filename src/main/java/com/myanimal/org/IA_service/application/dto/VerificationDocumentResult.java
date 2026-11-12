@@ -1,7 +1,5 @@
 package com.myanimal.org.IA_service.application.dto;
 
-import java.util.UUID;
-
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -11,13 +9,10 @@ import lombok.NoArgsConstructor;
 @Builder
 @AllArgsConstructor
 @NoArgsConstructor
-public class DocumentAnalysisRequest {
+public class VerificationDocumentResult {
 
-    private UUID documentId;
-    private UUID veterinaryId;
     private String documentType;
-    private String fileUrl;
-    private String mimeType;
-    private String sha256;
-    private DeclaredData declared;
+    private boolean supported;
+    private DocumentAnalysis analysis;
+    private String error;
 }
