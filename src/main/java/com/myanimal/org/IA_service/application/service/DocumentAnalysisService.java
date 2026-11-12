@@ -5,6 +5,10 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import org.springframework.stereotype.Service;
 
@@ -12,6 +16,8 @@ import com.myanimal.org.IA_service.application.dto.DocumentAnalysis;
 import com.myanimal.org.IA_service.application.dto.DocumentAnalysisRequest;
 import com.myanimal.org.IA_service.application.dto.DocumentAnalysisResponse;
 import com.myanimal.org.IA_service.application.dto.DocumentExtractionResult;
+import com.myanimal.org.IA_service.application.service.DocumentAnalysisCache.CachedAnalysis;
+import com.myanimal.org.IA_service.domain.exception.AnalysisUnavailableException;
 import com.myanimal.org.IA_service.domain.exception.DocumentAnalysisValidationException;
 import com.myanimal.org.IA_service.domain.exception.FileTooLargeException;
 import com.myanimal.org.IA_service.domain.exception.FileUrlNotAllowedException;
@@ -35,9 +41,30 @@ public class DocumentAnalysisService implements DocumentAnalysisUseCase {
     private final DocumentAnalysisProperties documentAnalysisProperties;
     private final GeminiDocumentExtractor geminiDocumentExtractor;
     private final DocumentCheckEngine documentCheckEngine;
+    private final DocumentAnalysisCache documentAnalysisCache;
+    private final DocumentAnalysisRateLimiter documentAnalysisRateLimiter;
+    private final ExecutorService documentAnalysisExecutor;
 
     @Override
     public DocumentAnalysisResponse analyze(DocumentAnalysisRequest request) {
+        documentAnalysisRateLimiter.checkAndRecord();
+        try {
+            return documentAnalysisExecutor.submit(() -> doAnalyze(request))
+                    .get(documentAnalysisProperties.getAnalysisTimeoutMs(), TimeUnit.MILLISECONDS);
+        } catch (TimeoutException ex) {
+            throw new AnalysisUnavailableException("El análisis superó el tiempo máximo permitido.");
+        } catch (ExecutionException ex) {
+            if (ex.getCause() instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            throw new AnalysisUnavailableException("Error inesperado analizando el documento.", ex.getCause());
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new AnalysisUnavailableException("Interrumpido analizando el documento.", ex);
+        }
+    }
+
+    private DocumentAnalysisResponse doAnalyze(DocumentAnalysisRequest request) {
         validate(request);
 
         Optional<DocumentType> type = DocumentType.fromCode(request.getDocumentType());
@@ -46,6 +73,18 @@ public class DocumentAnalysisService implements DocumentAnalysisUseCase {
                     .documentId(request.getDocumentId())
                     .supported(false)
                     .analyzedAt(Instant.now(clock))
+                    .build();
+        }
+
+        String cacheKey = request.getSha256() + ":" + request.getDocumentType();
+        Optional<CachedAnalysis> cached = documentAnalysisCache.get(cacheKey);
+        if (cached.isPresent()) {
+            return DocumentAnalysisResponse.builder()
+                    .documentId(request.getDocumentId())
+                    .supported(true)
+                    .model(cached.get().model())
+                    .analyzedAt(Instant.now(clock))
+                    .analysis(cached.get().analysis())
                     .build();
         }
 
@@ -62,6 +101,7 @@ public class DocumentAnalysisService implements DocumentAnalysisUseCase {
 
         DocumentExtractionResult extractionResult = geminiDocumentExtractor.extract(request, content);
         DocumentAnalysis analysis = documentCheckEngine.buildAnalysis(request, extractionResult.getExtraction());
+        documentAnalysisCache.put(cacheKey, new CachedAnalysis(extractionResult.getModelUsed(), analysis));
 
         return DocumentAnalysisResponse.builder()
                 .documentId(request.getDocumentId())

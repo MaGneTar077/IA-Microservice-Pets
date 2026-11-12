@@ -99,6 +99,7 @@ document-analysis:
   max-pages: ${MAX_PAGES:20}
   # Default provisional (90 días): el valor real lo define el negocio, ver reporte final.
   doc-max-age-days: ${DOC_MAX_AGE_DAYS:90}
+  analysis-timeout-ms: ${ANALYSIS_TIMEOUT_MS:15000}
 
 supabase:
   url: ${SUPABASE_URL}

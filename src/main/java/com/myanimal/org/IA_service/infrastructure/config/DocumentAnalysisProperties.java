@@ -18,4 +18,5 @@ public class DocumentAnalysisProperties {
     private int maxFileMb = 10;
     private int maxPages = 20;
     private int docMaxAgeDays = 90;
+    private long analysisTimeoutMs = 15000;
 }
