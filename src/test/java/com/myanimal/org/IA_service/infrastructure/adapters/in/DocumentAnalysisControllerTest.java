@@ -19,6 +19,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import com.myanimal.org.IA_service.application.dto.DocumentAnalysisResponse;
+import com.myanimal.org.IA_service.domain.exception.AiModelUnavailableException;
 import com.myanimal.org.IA_service.domain.exception.AnalysisUnavailableException;
 import com.myanimal.org.IA_service.domain.exception.DocumentAnalysisValidationException;
 import com.myanimal.org.IA_service.domain.exception.FileTooLargeException;
@@ -145,5 +146,18 @@ class DocumentAnalysisControllerTest {
                         .contentType(MediaType.APPLICATION_JSON).content(VALID_BODY))
                 .andExpect(status().isPayloadTooLarge())
                 .andExpect(jsonPath("$.code").value("FILE_TOO_LARGE"));
+    }
+
+    @Test
+    void falloDelModeloDeGeminiDevuelve503ConElFormatoInternoNoElGlobal() throws Exception {
+        when(documentAnalysisUseCase.analyze(any()))
+                .thenThrow(new AiModelUnavailableException("Gemini no disponible."));
+
+        mockMvc.perform(post(PATH).header("X-Internal-Api-Key", "test-internal-key")
+                        .contentType(MediaType.APPLICATION_JSON).content(VALID_BODY))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.code").value("AI_PROVIDER_UNAVAILABLE"))
+                .andExpect(jsonPath("$.status").value(503))
+                .andExpect(jsonPath("$.error").exists());
     }
 }

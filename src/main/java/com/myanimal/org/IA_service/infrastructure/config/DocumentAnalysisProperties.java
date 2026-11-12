@@ -17,4 +17,5 @@ public class DocumentAnalysisProperties {
     private List<String> allowedFileHosts = List.of();
     private int maxFileMb = 10;
     private int maxPages = 20;
+    private int docMaxAgeDays = 90;
 }

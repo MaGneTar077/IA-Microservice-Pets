@@ -20,9 +20,11 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import com.myanimal.org.IA_service.application.dto.DeclaredData;
+import com.myanimal.org.IA_service.application.dto.DocumentAnalysis;
 import com.myanimal.org.IA_service.application.dto.DocumentAnalysisRequest;
 import com.myanimal.org.IA_service.application.dto.DocumentAnalysisResponse;
-import com.myanimal.org.IA_service.domain.exception.AnalysisUnavailableException;
+import com.myanimal.org.IA_service.application.dto.DocumentExtraction;
+import com.myanimal.org.IA_service.application.dto.DocumentExtractionResult;
 import com.myanimal.org.IA_service.domain.exception.DocumentAnalysisValidationException;
 import com.myanimal.org.IA_service.domain.exception.FileTooLargeException;
 import com.myanimal.org.IA_service.domain.exception.FileUrlNotAllowedException;
@@ -38,6 +40,12 @@ class DocumentAnalysisServiceTest {
     @Mock
     private RemoteFileDownloadPort remoteFileDownloadPort;
 
+    @Mock
+    private GeminiDocumentExtractor geminiDocumentExtractor;
+
+    @Mock
+    private DocumentCheckEngine documentCheckEngine;
+
     private DocumentAnalysisProperties documentAnalysisProperties;
     private DocumentAnalysisService service;
 
@@ -47,7 +55,8 @@ class DocumentAnalysisServiceTest {
         documentAnalysisProperties.setAllowedFileHosts(List.of("storage.test"));
         documentAnalysisProperties.setMaxFileMb(10);
         documentAnalysisProperties.setMaxPages(5);
-        service = new DocumentAnalysisService(clock, remoteFileDownloadPort, documentAnalysisProperties);
+        service = new DocumentAnalysisService(clock, remoteFileDownloadPort, documentAnalysisProperties,
+                geminiDocumentExtractor, documentCheckEngine);
     }
 
     private DocumentAnalysisRequest.DocumentAnalysisRequestBuilder validRequest() {
@@ -75,12 +84,23 @@ class DocumentAnalysisServiceTest {
     }
 
     @Test
-    void tipoSoportadoAunNoImplementadoLanzaAnalysisUnavailableTrasDescargar() {
+    void tipoSoportadoDescargaExtraeYArmaLaRespuestaConLosChecks() {
         DocumentAnalysisRequest request = validRequest().build();
-        when(remoteFileDownloadPort.download(request.getFileUrl())).thenReturn(new byte[] { 1, 2, 3 });
+        byte[] content = { 1, 2, 3 };
+        when(remoteFileDownloadPort.download(request.getFileUrl())).thenReturn(content);
+        DocumentExtraction extraction = DocumentExtraction.builder().detectedType("RUT").legible(true).build();
+        when(geminiDocumentExtractor.extract(request, content)).thenReturn(
+                DocumentExtractionResult.builder().extraction(extraction).modelUsed("gemini-test").build());
+        DocumentAnalysis analysis = DocumentAnalysis.builder().detectedType("RUT").recommendation("LIKELY_VALID")
+                .build();
+        when(documentCheckEngine.buildAnalysis(request, extraction)).thenReturn(analysis);
 
-        assertThatThrownBy(() -> service.analyze(request))
-                .isInstanceOf(AnalysisUnavailableException.class);
+        DocumentAnalysisResponse response = service.analyze(request);
+
+        assertThat(response.isSupported()).isTrue();
+        assertThat(response.getModel()).isEqualTo("gemini-test");
+        assertThat(response.getAnalysis()).isEqualTo(analysis);
+        assertThat(response.getAnalyzedAt()).isEqualTo(Instant.parse("2026-11-12T17:00:00Z"));
     }
 
     @Test

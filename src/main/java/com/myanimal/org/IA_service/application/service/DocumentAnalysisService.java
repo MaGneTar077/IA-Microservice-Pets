@@ -8,9 +8,10 @@ import java.util.Set;
 
 import org.springframework.stereotype.Service;
 
+import com.myanimal.org.IA_service.application.dto.DocumentAnalysis;
 import com.myanimal.org.IA_service.application.dto.DocumentAnalysisRequest;
 import com.myanimal.org.IA_service.application.dto.DocumentAnalysisResponse;
-import com.myanimal.org.IA_service.domain.exception.AnalysisUnavailableException;
+import com.myanimal.org.IA_service.application.dto.DocumentExtractionResult;
 import com.myanimal.org.IA_service.domain.exception.DocumentAnalysisValidationException;
 import com.myanimal.org.IA_service.domain.exception.FileTooLargeException;
 import com.myanimal.org.IA_service.domain.exception.FileUrlNotAllowedException;
@@ -32,6 +33,8 @@ public class DocumentAnalysisService implements DocumentAnalysisUseCase {
     private final Clock clock;
     private final RemoteFileDownloadPort remoteFileDownloadPort;
     private final DocumentAnalysisProperties documentAnalysisProperties;
+    private final GeminiDocumentExtractor geminiDocumentExtractor;
+    private final DocumentCheckEngine documentCheckEngine;
 
     @Override
     public DocumentAnalysisResponse analyze(DocumentAnalysisRequest request) {
@@ -57,9 +60,16 @@ public class DocumentAnalysisService implements DocumentAnalysisUseCase {
             });
         }
 
-        // Bloques 3-4 reemplazan esto por la extracción con Gemini y los checks en código.
-        throw new AnalysisUnavailableException(
-                "El análisis de documentos todavía no está implementado para " + type.get().name() + ".");
+        DocumentExtractionResult extractionResult = geminiDocumentExtractor.extract(request, content);
+        DocumentAnalysis analysis = documentCheckEngine.buildAnalysis(request, extractionResult.getExtraction());
+
+        return DocumentAnalysisResponse.builder()
+                .documentId(request.getDocumentId())
+                .supported(true)
+                .model(extractionResult.getModelUsed())
+                .analyzedAt(Instant.now(clock))
+                .analysis(analysis)
+                .build();
     }
 
     private void validate(DocumentAnalysisRequest request) {
