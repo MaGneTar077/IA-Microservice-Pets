@@ -90,6 +90,9 @@ security:
     issuer: ${JWT_ISSUER:myanimalog-user-service}
     audience: ${JWT_AUDIENCE:myanimalog-api}
 
+internal:
+  api-key: ${INTERNAL_API_KEY}
+
 supabase:
   url: ${SUPABASE_URL}
   service-key: ${SUPABASE_SERVICE_KEY}

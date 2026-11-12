@@ -32,3 +32,6 @@ security:
 supabase:
   url: http://supabase.test
   service-key: test-service-key
+
+internal:
+  api-key: test-internal-key
