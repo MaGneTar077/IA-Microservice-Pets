@@ -15,7 +15,16 @@ public class SystemPromptConfig {
 
     @Bean("systemPromptText")
     public String systemPromptText(ResourcePatternResolver resourceResolver) throws IOException {
-        Resource resource = resourceResolver.getResource("classpath:prompts/system-prompt.txt");
+        return loadPrompt(resourceResolver, "system-prompt.txt");
+    }
+
+    @Bean("documentAnalysisPromptText")
+    public String documentAnalysisPromptText(ResourcePatternResolver resourceResolver) throws IOException {
+        return loadPrompt(resourceResolver, "document-analysis-prompt.txt");
+    }
+
+    private String loadPrompt(ResourcePatternResolver resourceResolver, String fileName) throws IOException {
+        Resource resource = resourceResolver.getResource("classpath:prompts/" + fileName);
         try (InputStream inputStream = resource.getInputStream()) {
             return StreamUtils.copyToString(inputStream, StandardCharsets.UTF_8);
         }

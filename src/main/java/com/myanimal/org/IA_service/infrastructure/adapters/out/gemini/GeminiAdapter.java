@@ -277,6 +277,8 @@ public class GeminiAdapter implements AiModelPort {
         // alarga las respuestas del chat, solo las permite.
         GeminiGenerationConfig generationConfig = GeminiGenerationConfig.builder()
                 .maxOutputTokens(properties.getMaxOutputTokens())
+                .responseMimeType(request.getResponseSchema() == null ? null : "application/json")
+                .responseSchema(request.getResponseSchema())
                 .build();
 
         return GeminiGenerateRequest.builder()

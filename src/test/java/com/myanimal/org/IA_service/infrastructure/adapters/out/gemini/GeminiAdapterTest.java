@@ -189,6 +189,30 @@ class GeminiAdapterTest {
     }
 
     @Test
+    void sinResponseSchemaNoEnviaResponseMimeType() {
+        GeminiAdapter adapter = new GeminiAdapter(
+                WebClient.builder().baseUrl("http://gemini.test").build(), defaultProperties(), new ObjectMapper());
+
+        var geminiRequest = adapter.toGeminiRequest(sampleRequest());
+
+        assertThat(geminiRequest.getGenerationConfig().getResponseMimeType()).isNull();
+        assertThat(geminiRequest.getGenerationConfig().getResponseSchema()).isNull();
+    }
+
+    @Test
+    void conResponseSchemaEnviaResponseMimeTypeJson() {
+        GeminiAdapter adapter = new GeminiAdapter(
+                WebClient.builder().baseUrl("http://gemini.test").build(), defaultProperties(), new ObjectMapper());
+        java.util.Map<String, Object> schema = java.util.Map.of("type", "OBJECT");
+
+        AiRequest request = sampleRequest().toBuilder().responseSchema(schema).build();
+        var geminiRequest = adapter.toGeminiRequest(request);
+
+        assertThat(geminiRequest.getGenerationConfig().getResponseMimeType()).isEqualTo("application/json");
+        assertThat(geminiRequest.getGenerationConfig().getResponseSchema()).isEqualTo(schema);
+    }
+
+    @Test
     void respuesta200MapeaTextoYTokens() {
         Queue<Object> responses = new ConcurrentLinkedQueue<>(List.of(ok(OK_BODY)));
         GeminiAdapter adapter = buildAdapter(defaultProperties(), responses);

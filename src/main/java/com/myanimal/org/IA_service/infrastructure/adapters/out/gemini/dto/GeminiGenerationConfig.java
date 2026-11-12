@@ -1,5 +1,7 @@
 package com.myanimal.org.IA_service.infrastructure.adapters.out.gemini.dto;
 
+import java.util.Map;
+
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
 
@@ -17,4 +19,6 @@ import lombok.NoArgsConstructor;
 public class GeminiGenerationConfig {
 
     private Integer maxOutputTokens;
+    private String responseMimeType;
+    private Map<String, Object> responseSchema;
 }
