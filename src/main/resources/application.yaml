@@ -93,6 +93,11 @@ security:
 internal:
   api-key: ${INTERNAL_API_KEY}
 
+document-analysis:
+  allowed-file-hosts: ${ALLOWED_FILE_HOSTS:}
+  max-file-mb: ${MAX_FILE_MB:10}
+  max-pages: ${MAX_PAGES:20}
+
 supabase:
   url: ${SUPABASE_URL}
   service-key: ${SUPABASE_SERVICE_KEY}

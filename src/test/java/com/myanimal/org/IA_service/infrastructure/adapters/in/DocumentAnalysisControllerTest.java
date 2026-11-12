@@ -21,6 +21,9 @@ import org.springframework.test.web.servlet.MockMvc;
 import com.myanimal.org.IA_service.application.dto.DocumentAnalysisResponse;
 import com.myanimal.org.IA_service.domain.exception.AnalysisUnavailableException;
 import com.myanimal.org.IA_service.domain.exception.DocumentAnalysisValidationException;
+import com.myanimal.org.IA_service.domain.exception.FileTooLargeException;
+import com.myanimal.org.IA_service.domain.exception.FileUrlNotAllowedException;
+import com.myanimal.org.IA_service.domain.exception.UnsupportedFileTypeException;
 import com.myanimal.org.IA_service.domain.ports.in.DocumentAnalysisUseCase;
 import com.myanimal.org.IA_service.infrastructure.config.SecurityConfig;
 
@@ -109,5 +112,38 @@ class DocumentAnalysisControllerTest {
                         .contentType(MediaType.APPLICATION_JSON).content(VALID_BODY))
                 .andExpect(status().isServiceUnavailable())
                 .andExpect(jsonPath("$.code").value("AI_PROVIDER_UNAVAILABLE"));
+    }
+
+    @Test
+    void mimeTypeNoPermitidoDevuelve400UNSUPPORTED_MIME_TYPE() throws Exception {
+        when(documentAnalysisUseCase.analyze(any()))
+                .thenThrow(new UnsupportedFileTypeException("El tipo de archivo application/zip no está permitido."));
+
+        mockMvc.perform(post(PATH).header("X-Internal-Api-Key", "test-internal-key")
+                        .contentType(MediaType.APPLICATION_JSON).content(VALID_BODY))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("UNSUPPORTED_MIME_TYPE"));
+    }
+
+    @Test
+    void hostNoPermitidoDevuelve400FILE_URL_NOT_ALLOWED() throws Exception {
+        when(documentAnalysisUseCase.analyze(any()))
+                .thenThrow(new FileUrlNotAllowedException("El host de fileUrl no está permitido."));
+
+        mockMvc.perform(post(PATH).header("X-Internal-Api-Key", "test-internal-key")
+                        .contentType(MediaType.APPLICATION_JSON).content(VALID_BODY))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("FILE_URL_NOT_ALLOWED"));
+    }
+
+    @Test
+    void archivoDemasiadoGrandeDevuelve413FILE_TOO_LARGE() throws Exception {
+        when(documentAnalysisUseCase.analyze(any()))
+                .thenThrow(new FileTooLargeException("El archivo supera el tamaño máximo permitido."));
+
+        mockMvc.perform(post(PATH).header("X-Internal-Api-Key", "test-internal-key")
+                        .contentType(MediaType.APPLICATION_JSON).content(VALID_BODY))
+                .andExpect(status().isPayloadTooLarge())
+                .andExpect(jsonPath("$.code").value("FILE_TOO_LARGE"));
     }
 }

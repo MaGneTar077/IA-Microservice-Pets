@@ -10,6 +10,9 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 import com.myanimal.org.IA_service.domain.exception.AnalysisUnavailableException;
 import com.myanimal.org.IA_service.domain.exception.DocumentAnalysisValidationException;
+import com.myanimal.org.IA_service.domain.exception.FileTooLargeException;
+import com.myanimal.org.IA_service.domain.exception.FileUrlNotAllowedException;
+import com.myanimal.org.IA_service.domain.exception.UnsupportedFileTypeException;
 import com.myanimal.org.IA_service.infrastructure.adapters.in.dto.InternalErrorResponse;
 
 import lombok.extern.slf4j.Slf4j;
@@ -31,6 +34,21 @@ public class InternalApiExceptionHandler {
     @ExceptionHandler(HttpMessageNotReadableException.class)
     public ResponseEntity<InternalErrorResponse> handleMalformedBody(HttpMessageNotReadableException ex) {
         return build(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "El cuerpo de la solicitud es inválido.");
+    }
+
+    @ExceptionHandler(UnsupportedFileTypeException.class)
+    public ResponseEntity<InternalErrorResponse> handleUnsupportedFileType(UnsupportedFileTypeException ex) {
+        return build(HttpStatus.BAD_REQUEST, "UNSUPPORTED_MIME_TYPE", ex.getMessage());
+    }
+
+    @ExceptionHandler(FileUrlNotAllowedException.class)
+    public ResponseEntity<InternalErrorResponse> handleFileUrlNotAllowed(FileUrlNotAllowedException ex) {
+        return build(HttpStatus.BAD_REQUEST, "FILE_URL_NOT_ALLOWED", ex.getMessage());
+    }
+
+    @ExceptionHandler(FileTooLargeException.class)
+    public ResponseEntity<InternalErrorResponse> handleFileTooLarge(FileTooLargeException ex) {
+        return build(HttpStatus.PAYLOAD_TOO_LARGE, "FILE_TOO_LARGE", ex.getMessage());
     }
 
     @ExceptionHandler(AnalysisUnavailableException.class)

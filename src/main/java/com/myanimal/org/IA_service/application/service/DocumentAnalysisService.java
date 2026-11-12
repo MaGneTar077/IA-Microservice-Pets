@@ -1,7 +1,10 @@
 package com.myanimal.org.IA_service.application.service;
 
+import java.net.URI;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.Optional;
+import java.util.Set;
 
 import org.springframework.stereotype.Service;
 
@@ -9,8 +12,13 @@ import com.myanimal.org.IA_service.application.dto.DocumentAnalysisRequest;
 import com.myanimal.org.IA_service.application.dto.DocumentAnalysisResponse;
 import com.myanimal.org.IA_service.domain.exception.AnalysisUnavailableException;
 import com.myanimal.org.IA_service.domain.exception.DocumentAnalysisValidationException;
+import com.myanimal.org.IA_service.domain.exception.FileTooLargeException;
+import com.myanimal.org.IA_service.domain.exception.FileUrlNotAllowedException;
+import com.myanimal.org.IA_service.domain.exception.UnsupportedFileTypeException;
 import com.myanimal.org.IA_service.domain.model.DocumentType;
 import com.myanimal.org.IA_service.domain.ports.in.DocumentAnalysisUseCase;
+import com.myanimal.org.IA_service.domain.ports.out.RemoteFileDownloadPort;
+import com.myanimal.org.IA_service.infrastructure.config.DocumentAnalysisProperties;
 
 import lombok.RequiredArgsConstructor;
 
@@ -18,23 +26,40 @@ import lombok.RequiredArgsConstructor;
 @RequiredArgsConstructor
 public class DocumentAnalysisService implements DocumentAnalysisUseCase {
 
+    private static final Set<String> ALLOWED_MIME_TYPES =
+            Set.of("application/pdf", "image/jpeg", "image/png");
+
     private final Clock clock;
+    private final RemoteFileDownloadPort remoteFileDownloadPort;
+    private final DocumentAnalysisProperties documentAnalysisProperties;
 
     @Override
     public DocumentAnalysisResponse analyze(DocumentAnalysisRequest request) {
         validate(request);
 
-        return DocumentType.fromCode(request.getDocumentType())
-                .<DocumentAnalysisResponse>map(type -> {
-                    // Bloques 2-4 reemplazan esto por la descarga, extracción con Gemini y checks en código.
-                    throw new AnalysisUnavailableException(
-                            "El análisis de documentos todavía no está implementado para " + type.name() + ".");
-                })
-                .orElseGet(() -> DocumentAnalysisResponse.builder()
-                        .documentId(request.getDocumentId())
-                        .supported(false)
-                        .analyzedAt(Instant.now(clock))
-                        .build());
+        Optional<DocumentType> type = DocumentType.fromCode(request.getDocumentType());
+        if (type.isEmpty()) {
+            return DocumentAnalysisResponse.builder()
+                    .documentId(request.getDocumentId())
+                    .supported(false)
+                    .analyzedAt(Instant.now(clock))
+                    .build();
+        }
+
+        byte[] content = remoteFileDownloadPort.download(request.getFileUrl());
+        if ("application/pdf".equals(request.getMimeType())) {
+            PdfPageCounter.countPages(content).ifPresent(pageCount -> {
+                if (pageCount > documentAnalysisProperties.getMaxPages()) {
+                    throw new FileTooLargeException(
+                            "El documento supera el máximo de " + documentAnalysisProperties.getMaxPages()
+                                    + " páginas.");
+                }
+            });
+        }
+
+        // Bloques 3-4 reemplazan esto por la extracción con Gemini y los checks en código.
+        throw new AnalysisUnavailableException(
+                "El análisis de documentos todavía no está implementado para " + type.get().name() + ".");
     }
 
     private void validate(DocumentAnalysisRequest request) {
@@ -46,6 +71,27 @@ public class DocumentAnalysisService implements DocumentAnalysisUseCase {
         requireNotBlank(request.getSha256(), "sha256 es obligatorio.");
         if (request.getDeclared() == null) {
             throw new DocumentAnalysisValidationException("declared es obligatorio.");
+        }
+
+        if (!ALLOWED_MIME_TYPES.contains(request.getMimeType())) {
+            throw new UnsupportedFileTypeException(
+                    "El tipo de archivo " + request.getMimeType() + " no está permitido.");
+        }
+        validateFileUrlAllowed(request.getFileUrl());
+    }
+
+    private void validateFileUrlAllowed(String fileUrl) {
+        URI uri;
+        try {
+            uri = URI.create(fileUrl);
+        } catch (IllegalArgumentException ex) {
+            throw new FileUrlNotAllowedException("fileUrl no es una URL válida.");
+        }
+
+        if (!"https".equalsIgnoreCase(uri.getScheme())
+                || uri.getHost() == null
+                || !documentAnalysisProperties.getAllowedFileHosts().contains(uri.getHost())) {
+            throw new FileUrlNotAllowedException("El host de fileUrl no está permitido.");
         }
     }
 

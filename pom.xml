@@ -23,6 +23,7 @@
 		<spring-cloud-gcp.version>5.9.0</spring-cloud-gcp.version>
 		<jjwt.version>0.12.6</jjwt.version>
 		<springdoc.version>2.8.9</springdoc.version>
+		<pdfbox.version>3.0.3</pdfbox.version>
 	</properties>
 
 	<dependencyManagement>
@@ -125,6 +126,13 @@
 			<groupId>org.springdoc</groupId>
 			<artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
 			<version>${springdoc.version}</version>
+		</dependency>
+
+		<!-- Verificación de documentos: contar páginas de un PDF para el límite MAX_PAGES -->
+		<dependency>
+			<groupId>org.apache.pdfbox</groupId>
+			<artifactId>pdfbox</artifactId>
+			<version>${pdfbox.version}</version>
 		</dependency>
 
 		<!-- Lombok -->
