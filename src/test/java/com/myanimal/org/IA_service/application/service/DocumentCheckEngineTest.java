@@ -85,6 +85,32 @@ class DocumentCheckEngineTest {
         assertThat(checkFor(analysis, "NIT_MATCHES").getStatus()).isEqualTo("PASS");
     }
 
+    // Formato real confirmado por Veterinary: "900123456-1" (9 dígitos + guion + DV). El DV
+    // nunca participa en NIT_MATCHES: solo responde "¿es el mismo cuerpo?".
+    @Test
+    void nitMatchesIgnoraElDvAunqueElExtraidoNoLoInformePorSeparado() {
+        DeclaredData declarado = declaredBuilder().nit("900123456-1").build();
+        DocumentExtraction extraccionSinDv = extractionBuilder()
+                .extracted(ExtractedData.builder().nit("900123456").build())
+                .build();
+
+        DocumentAnalysis analysis = engine.buildAnalysis(DocumentType.RUT, declarado, extraccionSinDv);
+
+        assertThat(checkFor(analysis, "NIT_MATCHES").getStatus()).isEqualTo("PASS");
+    }
+
+    @Test
+    void nitMatchesIgnoraElDvAunqueElExtraidoLoTraigaPegadoConGuion() {
+        DeclaredData declarado = declaredBuilder().nit("900123456-1").build();
+        DocumentExtraction extraccionConGuion = extractionBuilder()
+                .extracted(ExtractedData.builder().nit("900123456-1").build())
+                .build();
+
+        DocumentAnalysis analysis = engine.buildAnalysis(DocumentType.RUT, declarado, extraccionConGuion);
+
+        assertThat(checkFor(analysis, "NIT_MATCHES").getStatus()).isEqualTo("PASS");
+    }
+
     @Test
     void nitDistintoAlDeclaradoDaFailYLikelyInvalid() {
         DocumentExtraction extraction = extractionBuilder()
@@ -97,16 +123,63 @@ class DocumentCheckEngineTest {
         assertThat(analysis.getRecommendation()).isEqualTo("LIKELY_INVALID");
     }
 
+    // Los 3 escenarios de NIT_CHECK_DIGIT_VALID, todos con el cuerpo real "900123456"
+    // (cuyo DV correcto, algoritmo DIAN, es 8) y formato declarado "cuerpo-DV" confirmado
+    // por Veterinary. La corroboración ahora es DV declarado == DV extraído, no NIT_MATCHES.
+
     @Test
-    void digitoDeVerificacionIncorrectoConNitMatchesPassEscalaALikelyInvalid() {
-        // Declarado sin dígito de verificación, para que NIT_MATCHES solo compare el cuerpo
-        // del NIT y corrobore la lectura sin que el dígito incorrecto lo arrastre a FAIL.
-        DeclaredData declaredSinDigito = declaredBuilder().nit("900123456").build();
-        DocumentExtraction extraction = extractionBuilder()
-                .extracted(ExtractedData.builder().nit("900123456").verificationDigit("3").build())
+    void dvDeclaradoConTypoDeLaClinicaNoEscalaNada() {
+        // La clínica se equivocó al declarar su propio DV (declaró "-7", el real es "-8"),
+        // pero el documento en sí es consistente: el extraído trae el DV correcto (8) y
+        // NIT_CHECK_DIGIT_VALID da PASS. El typo de declared no toca NIT_MATCHES (compara
+        // solo el cuerpo) ni corrobora nada porque no hay FAIL que corroborar.
+        DeclaredData declaradoConTypo = declaredBuilder().nit("900123456-7").build();
+        DocumentExtraction extraccionValida = extractionBuilder()
+                .extracted(ExtractedData.builder().nit("900123456").verificationDigit("8").build())
                 .build();
 
-        DocumentAnalysis analysis = engine.buildAnalysis(DocumentType.RUT, declaredSinDigito, extraction);
+        DocumentAnalysis analysis = engine.buildAnalysis(DocumentType.RUT, declaradoConTypo, extraccionValida);
+
+        assertThat(checkFor(analysis, "NIT_MATCHES").getStatus()).isEqualTo("PASS");
+        assertThat(checkFor(analysis, "NIT_CHECK_DIGIT_VALID").getStatus()).isEqualTo("PASS");
+        // No escala a LIKELY_INVALID: el typo del DV declarado no afecta NIT_MATCHES (solo
+        // compara el cuerpo) y no hay ningún FAIL que corroborar. Queda NEEDS_REVIEW solo
+        // porque esta extracción no trae los demás campos (nombre, fecha, actividad), no
+        // por el typo.
+        assertThat(analysis.getRecommendation()).isEqualTo("NEEDS_REVIEW");
+    }
+
+    @Test
+    void dvDudosoPorOcrSinCorroboracionDaNeedsReview() {
+        // El documento real tiene DV válido (8, declarado correctamente por la clínica),
+        // pero el modelo lo leyó mal (9): NIT_CHECK_DIGIT_VALID FAIL. El DV declarado (8) no
+        // coincide con el extraído (9) — sin corroboración, podría ser el OCR. NEEDS_REVIEW,
+        // no LIKELY_INVALID.
+        DeclaredData declaradoCorrecto = declaredBuilder().nit("900123456-8").build();
+        DocumentExtraction extraccionConOcrDudoso = extractionBuilder()
+                .extracted(ExtractedData.builder().nit("900123456").verificationDigit("9").build())
+                .build();
+
+        DocumentAnalysis analysis = engine.buildAnalysis(DocumentType.RUT, declaradoCorrecto,
+                extraccionConOcrDudoso);
+
+        assertThat(checkFor(analysis, "NIT_CHECK_DIGIT_VALID").getStatus()).isEqualTo("FAIL");
+        assertThat(analysis.getRecommendation()).isEqualTo("NEEDS_REVIEW");
+    }
+
+    @Test
+    void dvFabricadoCorroboradoPorDeclaradoEscalaALikelyInvalid() {
+        // El documento trae un DV (9) que no satisface el algoritmo DIAN para su propio
+        // cuerpo (debería ser 8), y la clínica declaró ese mismo dígito equivocado (9):
+        // dos lecturas independientes coinciden en que el DV es 9, así que no es un error
+        // de lectura — el NIT mismo es inválido. LIKELY_INVALID.
+        DeclaredData declaradoConMismoDvInvalido = declaredBuilder().nit("900123456-9").build();
+        DocumentExtraction extraccionConDvInvalido = extractionBuilder()
+                .extracted(ExtractedData.builder().nit("900123456").verificationDigit("9").build())
+                .build();
+
+        DocumentAnalysis analysis = engine.buildAnalysis(DocumentType.RUT, declaradoConMismoDvInvalido,
+                extraccionConDvInvalido);
 
         assertThat(checkFor(analysis, "NIT_MATCHES").getStatus()).isEqualTo("PASS");
         assertThat(checkFor(analysis, "NIT_CHECK_DIGIT_VALID").getStatus()).isEqualTo("FAIL");
@@ -114,10 +187,7 @@ class DocumentCheckEngineTest {
     }
 
     @Test
-    void digitoDeVerificacionIncorrectoSinCorroboracionNoEscalaSoloPorSiMismo() {
-        // Sin NIT declarado no hay corroboración de la lectura: NIT_MATCHES queda UNCLEAR
-        // y el fallo del dígito de verificación podría ser solo OCR, así que no es
-        // "clave" por sí solo (NEEDS_REVIEW, no LIKELY_INVALID).
+    void sinDvDeclaradoNoHayCorroboracionYNoEscala() {
         DocumentExtraction extraction = extractionBuilder()
                 .extracted(ExtractedData.builder().nit("900123456").verificationDigit("3").build())
                 .build();

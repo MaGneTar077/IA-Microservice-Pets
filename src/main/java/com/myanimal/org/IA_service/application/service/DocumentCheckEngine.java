@@ -27,20 +27,23 @@ import com.myanimal.org.IA_service.infrastructure.config.DocumentAnalysisPropert
  * algo FALTA o no se pudo verificar. Un check en FAIL es una contradicción (se leyó y no
  * cuadra); UNCLEAR es "no se pudo verificar", nunca una contradicción.
  *
+ * NIT_MATCHES y NIT_CHECK_DIGIT_VALID responden preguntas distintas:
+ * - NIT_MATCHES responde "¿es el mismo NIT?" — compara solo el CUERPO (sin el dígito de
+ *   verificación). El DV es una función matemática del cuerpo, no aporta identidad: dos
+ *   entidades no pueden tener el mismo cuerpo y distinto DV, así que una discrepancia ahí es
+ *   siempre un error de transcripción, nunca un NIT distinto.
+ * - NIT_CHECK_DIGIT_VALID responde "¿es un NIT válido?" — calcula el DV esperado con el
+ *   algoritmo DIAN a partir del cuerpo extraído y lo compara contra el DV que el modelo leyó
+ *   del documento.
+ *
  * Checks clave (si fallan, el documento es LIKELY_INVALID — "se contradice"):
  * - TYPE_MATCHES FAIL, NIT_MATCHES FAIL o flag WRONG_DOCUMENT.
- * - NIT_CHECK_DIGIT_VALID FAIL, pero SOLO si NIT_MATCHES dio PASS: si el NIT declarado
- *   (escrito por una persona) coincide con el extraído, eso corrobora que el modelo leyó
- *   bien ese NIT, así que un dígito de verificación que no cuadra es un problema del NIT
- *   mismo, no un error de lectura. Si NIT_MATCHES no corrobora (UNCLEAR o FAIL), un fallo
- *   del dígito de verificación puede ser solo un error de OCR en esa posición: no escala
- *   solo (NIT_MATCHES FAIL ya escala por su cuenta; UNCLEAR deja el documento en
- *   NEEDS_REVIEW).
- * Limitación conocida y aceptada: si el NIT declarado no incluye el dígito de verificación,
- * NIT_MATCHES corrobora el cuerpo del NIT pero no esa posición, así que un OCR que falle
- * justo ahí podría escalar a LIKELY_INVALID. Es poco probable (un documento borroso suele
- * romper también NIT_MATCHES) y el costo es revisión humana extra, no una decisión
- * automática equivocada.
+ * - NIT_CHECK_DIGIT_VALID FAIL, pero SOLO si el DV declarado por la clínica (persona, no
+ *   OCR) coincide con el DV que el modelo leyó del documento: dos lecturas independientes
+ *   del mismo dígito que coinciden y aun así no cuadran con el cuerpo del NIT significan
+ *   que el NIT en sí es inválido, no un error de lectura. Si el DV declarado no coincide
+ *   con el extraído (o no hay DV declarado), no hay corroboración — uno de los dos pudo
+ *   leerse/transcribirse mal — y el documento queda en NEEDS_REVIEW, no LIKELY_INVALID.
  */
 @Component
 class DocumentCheckEngine {
@@ -78,7 +81,7 @@ class DocumentCheckEngine {
                 extraction.getExtracted() == null ? null : extraction.getExtracted().getLegalRepresentativeName(),
                 declared == null ? null : declared.getLegalRepresentativeName()));
 
-        String recommendation = computeRecommendation(extraction, typeMatches, checks);
+        String recommendation = computeRecommendation(extraction, typeMatches, checks, declared);
 
         // Privacidad: una cédula no tiene NIT, razón social, fecha de expedición ni
         // actividad económica que verificar — y, sobre todo, su número nunca debe salir de
@@ -120,7 +123,7 @@ class DocumentCheckEngine {
         checks.add(issueDateRecentCheck(extracted));
         checks.add(activityRelatedCheck(extracted));
 
-        String recommendation = computeRecommendation(extraction, typeMatches, checks);
+        String recommendation = computeRecommendation(extraction, typeMatches, checks, declared);
 
         return DocumentAnalysis.builder()
                 .detectedType(extraction.getDetectedType())
@@ -136,20 +139,38 @@ class DocumentCheckEngine {
     }
 
     private DocumentCheck nitMatchesCheck(ExtractedData extracted, DeclaredData declared) {
-        String extractedDigits = extracted == null ? "" : digitsOnly(extracted.getNit());
-        String declaredDigits = declared == null ? "" : digitsOnly(declared.getNit());
-        if (extractedDigits.isEmpty() || declaredDigits.isEmpty()) {
+        String extractedBody = extracted == null ? "" : nitBody(extracted.getNit());
+        String declaredBody = declared == null ? "" : nitBody(declared.getNit());
+        if (extractedBody.isEmpty() || declaredBody.isEmpty()) {
             return new DocumentCheck("NIT_MATCHES", UNCLEAR, "No hay NIT extraído o declarado para comparar.");
         }
 
-        // El NIT declarado llega tal como Veterinary lo guarda: con o sin dígito de
-        // verificación, con o sin guion. Coincide si los dígitos declarados son iguales al
-        // NIT extraído, o al NIT extraído seguido de su dígito de verificación.
-        String checkDigit = extracted == null ? "" : digitsOnly(extracted.getVerificationDigit());
-        boolean matches = declaredDigits.equals(extractedDigits)
-                || declaredDigits.equals(extractedDigits + checkDigit);
+        boolean matches = extractedBody.equals(declaredBody);
         return new DocumentCheck("NIT_MATCHES", matches ? PASS : FAIL,
-                "Extraído: " + extractedDigits + ", declarado: " + declaredDigits);
+                "Extraído: " + extractedBody + ", declarado: " + declaredBody);
+    }
+
+    /**
+     * El NIT declarado llega tal como Veterinary lo guarda: formato confirmado
+     * "cuerpo-DV" (p. ej. "900123456-1"), pero se tolera sin guion o sin DV. El cuerpo de
+     * un NIT de persona jurídica son 9 dígitos; si digitsOnly trae 10, el último es el DV y
+     * se descarta aquí (el DV se compara aparte, nunca como parte de la identidad).
+     */
+    private String nitBody(String rawNit) {
+        String digits = digitsOnly(rawNit);
+        return digits.length() == 10 ? digits.substring(0, 9) : digits;
+    }
+
+    /**
+     * DV tal como lo escribió la clínica al declarar, si lo incluyó. Vacío si no hay DV
+     * declarado (nada con qué corroborar la lectura del modelo).
+     */
+    private String declaredCheckDigit(DeclaredData declared) {
+        if (declared == null) {
+            return "";
+        }
+        String digits = digitsOnly(declared.getNit());
+        return digits.length() == 10 ? digits.substring(9) : "";
     }
 
     private DocumentCheck nitCheckDigitCheck(ExtractedData extracted) {
@@ -206,18 +227,21 @@ class DocumentCheckEngine {
     }
 
     private String computeRecommendation(DocumentExtraction extraction, boolean typeMatches,
-            List<DocumentCheck> checks) {
+            List<DocumentCheck> checks, DeclaredData declared) {
         if (!Boolean.TRUE.equals(extraction.getLegible())) {
             return "NEEDS_REVIEW";
         }
 
         boolean hasWrongDocumentFlag = extraction.getFlags() != null
                 && extraction.getFlags().contains("WRONG_DOCUMENT");
-        boolean nitMatchesPassed = checks.stream()
-                .anyMatch(check -> "NIT_MATCHES".equals(check.getCode()) && PASS.equals(check.getStatus()));
         boolean nitFails = checks.stream()
                 .anyMatch(check -> "NIT_MATCHES".equals(check.getCode()) && FAIL.equals(check.getStatus()));
-        boolean nitCheckDigitFailsCorroborated = nitMatchesPassed && checks.stream()
+
+        ExtractedData extracted = extraction.getExtracted();
+        String declaredDv = declaredCheckDigit(declared);
+        String extractedDv = extracted == null ? "" : digitsOnly(extracted.getVerificationDigit());
+        boolean checkDigitCorroborated = !declaredDv.isEmpty() && declaredDv.equals(extractedDv);
+        boolean nitCheckDigitFailsCorroborated = checkDigitCorroborated && checks.stream()
                 .anyMatch(check -> "NIT_CHECK_DIGIT_VALID".equals(check.getCode()) && FAIL.equals(check.getStatus()));
         if (!typeMatches || nitFails || hasWrongDocumentFlag || nitCheckDigitFailsCorroborated) {
             return "LIKELY_INVALID";
