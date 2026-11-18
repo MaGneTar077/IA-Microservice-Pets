@@ -334,6 +334,7 @@ Los adjuntos no se guardan en Postgres: van a Supabase Storage y en `ai_message`
 | `GCP_PROJECT_ID` | Proyecto de Google Cloud | env var |
 | `GATEWAY_URL` | Base URL del api-gateway para tool calls | env var |
 | `REDIS_HOST`, `REDIS_PASSWORD` | Upstash, para rate limiting | Secret Manager |
+| `PUBSUB_ENABLED` | Apagado (`false`) hasta la etapa 5: hoy no hay publisher ni subscriber. Encender cuando se implementen las suscripciones push | env var |
 
 ### `application.yml`
 

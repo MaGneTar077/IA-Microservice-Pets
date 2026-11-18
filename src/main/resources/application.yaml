@@ -63,7 +63,10 @@ spring:
     gcp:
       project-id: ${GCP_PROJECT_ID}
       pubsub:
-        enabled: true
+        # Apagado hasta la etapa 5 (suscripciones push para las sugerencias de cuidado):
+        # hoy no hay publisher ni subscriber usándolo, así que el único efecto de dejarlo
+        # encendido es cargar gRPC/Netty y resolver credenciales al arrancar.
+        enabled: ${PUBSUB_ENABLED:false}
 
   jackson:
     default-property-inclusion: non_null
